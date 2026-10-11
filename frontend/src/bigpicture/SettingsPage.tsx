@@ -1,5 +1,5 @@
 /**
- * The Settings page: seven sections on the left, the focused section's controls
+ * The Settings page: eight sections on the left, the focused section's controls
  * on the right.
  *
  * Every section's state and every handler lives here rather than in the section
@@ -32,6 +32,7 @@ import {
   savePreferredRegion,
   saveCollectionPlatformGroups,
   setCollectionNamingMode,
+  setQamEntryPosition,
   getKnownRegions,
   ensureDeviceRegistered,
   listDevices,
@@ -45,6 +46,7 @@ import {
 import type {
   RegisteredDevice,
   CollectionNamingMode,
+  QamEntryPosition,
   CustomHeaderEntry,
   SaveSyncSettings as SaveSyncSettingsType,
   SettingsSection,
@@ -53,6 +55,7 @@ import type {
 } from "../types";
 import { SETTINGS_SECTIONS } from "../types";
 import { detach } from "../utils/detach";
+import { setQamEntryPositionState } from "../utils/qamEntryPositionStore";
 import {
   runUpdateCheckNow,
   setUpdateCheckSwitch,
@@ -72,6 +75,7 @@ import { SaveSyncSection } from "./settings/SaveSyncSection";
 import { RegisteredDevicesSection } from "./settings/RegisteredDevicesSection";
 import { ControllerSection } from "./settings/ControllerSection";
 import { AdvancedSection } from "./settings/AdvancedSection";
+import { InterfaceSection } from "./settings/InterfaceSection";
 import { UpdatesSection } from "./settings/UpdatesSection";
 import { EmulatorSourcesSection } from "./settings/EmulatorSourcesSection";
 import { WithUpdateDot } from "./UpdateDot";
@@ -104,6 +108,7 @@ const SECTION_LABELS: Record<SettingsSection, string> = {
   "steam-library": "Steam Library",
   "emulator-sources": "Emulator sources",
   updates: "Updates",
+  interface: "Interface",
   advanced: "Advanced",
 };
 
@@ -176,6 +181,9 @@ export const SettingsPage: FC<SettingsPageProps> = ({ onBack, section }) => {
   // Steam-collection naming mode (#1539): "merge" (default) or "by_label".
   const [namingMode, setNamingMode] = useState<CollectionNamingMode>("merge");
 
+  // Interface state
+  const [qamPosition, setQamPosition] = useState<QamEntryPosition>("above_decky");
+
   // Emulator sources: `undefined` until the listing answers, `null` where it failed.
   const [emulatorSources, setEmulatorSources] = useState<EmulatorSourcesListing | null | undefined>(undefined);
   const [sourcesBusy, setSourcesBusy] = useState(false);
@@ -194,6 +202,7 @@ export const SettingsPage: FC<SettingsPageProps> = ({ onBack, section }) => {
         setPreferredRegion(s.preferred_region ?? AUTO_REGION);
         setPlatformGroups(!!s.collection_create_platform_groups);
         setNamingMode(s.collection_naming_mode ?? "merge");
+        setQamPosition(s.qam_entry_position ?? "above_decky");
       })
       .catch((e) => {
         logError(`Failed to load settings: ${e}`);
@@ -565,6 +574,26 @@ export const SettingsPage: FC<SettingsPageProps> = ({ onBack, section }) => {
     );
   };
 
+  // --- Interface handler ---
+  // The store the Quick Access render handler reads is written only once the
+  // backend has taken the value, so a change the backend refused or never
+  // received never reaches it.
+  const handleQamEntryPositionChange = (position: QamEntryPosition) => {
+    const previous = qamPosition;
+    setQamPosition(position);
+    detach(
+      (async () => {
+        try {
+          const result = await setQamEntryPosition(position);
+          if (result.success) setQamEntryPositionState(position);
+          else setQamPosition(previous);
+        } catch {
+          setQamPosition(previous);
+        }
+      })(),
+    );
+  };
+
   /** The listing, or `null` where it could not be read — the one read both the
    *  page's mount and a refused change go through. */
   const fetchEmulatorSources = (): Promise<EmulatorSourcesListing | null> =>
@@ -705,6 +734,10 @@ export const SettingsPage: FC<SettingsPageProps> = ({ onBack, section }) => {
               detach(handleCheckForUpdateNow());
             }}
           />
+        );
+      case "interface":
+        return (
+          <InterfaceSection qamEntryPosition={qamPosition} onQamEntryPositionChange={handleQamEntryPositionChange} />
         );
       case "advanced":
         return <AdvancedSection logLevel={logLevel} onLogLevelChange={handleLogLevelChange} />;
