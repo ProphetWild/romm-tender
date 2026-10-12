@@ -269,7 +269,8 @@ and the row you focus is the one the right-hand pane describes.
    setting up, or ES-DE's command for them is not one Tender can bake — so RetroDECK chooses one itself when a game
    starts. If it reads **no emulator installed** in red, the emulator RetroDECK would have fallen back to is not on this
    machine, and the sentence below names it. If it reads **no emulator** in red, RetroDECK has none for this platform at
-   all. The sentence below the line says which of the three it is
+   all. The sentence below the line says which of the three it is. A game's BIOS tab reads the same words in its
+   Emulator column, the red ones in red, when nothing can be pinned for that game
 6. The **chip button** at the right of the name opens a menu of the platform's emulators — the same button, in the same
    two colours, as the one on a game's page. It is always there: it opens the menu whenever there is more than one
    emulator to choose between — also before the platform's first sync, so you can pick before its games reach Steam —
