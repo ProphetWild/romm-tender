@@ -48,7 +48,13 @@ import {
   setSystemCore,
 } from "../../api/backend";
 import type { BiosDeleteResult } from "../../api/backend";
-import type { FirmwarePlatformExt, PlatformSyncSetting, SystemCoreInfo } from "../../types";
+import type {
+  EndpointFailure,
+  FirmwareDownloadResult,
+  FirmwarePlatformExt,
+  PlatformSyncSetting,
+  SystemCoreInfo,
+} from "../../types";
 import { detach } from "../../utils/detach";
 import { batchConfirmLaunchOptions } from "../../utils/launchOptionsReconcile";
 import { clearPlatformCollection } from "../../utils/collections";
@@ -238,7 +244,7 @@ export interface PlatformsPageState {
    * The pane says a download is happening by spinning THAT button and disabling
    * the others, so it needs the identity and not just `busySlug`. A success is
    * said by the spinner ending and the rows re-reading; only a failure gets a
-   * sentence.
+   * sentence, and so does a batch that passed over files it could not fetch.
    */
   downloadPending: string | null;
   /**
@@ -789,11 +795,7 @@ export function usePlatformsPage(): PlatformsPageState {
   }, []);
 
   const runDownload = useCallback(
-    (
-      slug: string,
-      pending: string,
-      work: () => Promise<{ success: boolean; message?: string; downloaded?: number }>,
-    ) => {
+    (slug: string, pending: string, work: () => Promise<FirmwareDownloadResult | EndpointFailure>) => {
       setBusySlug(slug);
       setDownloadPending(pending);
       // Cleared up front, so a previous failure does not stand under a run that
@@ -804,16 +806,23 @@ export function usePlatformsPage(): PlatformsPageState {
           try {
             const result = await work();
             // Success says itself: the spinner ends and the rows come back
-            // re-read. Only a failure gets words, because a stopped spinner is
-            // not a message and the notice that used to carry one is gone.
+            // re-read. Only what failed gets words — and a batch in which every
+            // file it tried failed is a failure to the reader, whatever the
+            // answer's `success` says.
             if (result.success) {
               await readPlatform(slug);
-              if ((result.downloaded ?? 0) > 0) announceBiosChange(slug);
+              if (result.downloaded > 0) announceBiosChange(slug);
+              const failed = result.failed ?? [];
+              if (failed.length > 0) setStatus({ slug, scope: "bios", text: result.message });
+              if (failed.length > 0 && result.downloaded === 0) {
+                reportFailure(pending);
+                return;
+              }
               setDownloadPending(null);
               setBusySlug(null);
               return;
             }
-            setStatus({ slug, scope: "bios", text: result.message ?? "Download failed" });
+            setStatus({ slug, scope: "bios", text: result.message });
             reportFailure(pending);
           } catch (e) {
             setStatus({ slug, scope: "bios", text: `Download failed: ${e}` });
@@ -846,12 +855,12 @@ export function usePlatformsPage(): PlatformsPageState {
           try {
             const result = await deletePlatformBios(slug);
             setStatus({ slug, scope: "bios", text: result.message });
-            if (result.success) {
+            // A `delete_incomplete` may have removed files or dropped records
+            // before the file it stopped on, so the rows are re-read as after a
+            // success.
+            if (result.success || result.reason === "delete_incomplete") {
               await readPlatform(slug);
-              // Only when something went, the same rule the row deletes and the
-              // downloads keep: the event costs every mounted game panel a live
-              // BIOS read, so a run that moved no files stays silent.
-              if (result.deleted_count > 0) announceBiosChange(slug);
+              if ((result.deleted_count ?? 0) > 0) announceBiosChange(slug);
             }
           } catch (e) {
             setStatus({ slug, scope: "bios", text: `Failed to delete BIOS files: ${e}` });
@@ -866,7 +875,9 @@ export function usePlatformsPage(): PlatformsPageState {
 
   /** One row's Delete, whichever end it addresses: the same success and failure
    *  handling for a file and for a folder's recorded contents. A success is
-   *  said by the rows coming back re-read; only a failure gets a line. */
+   *  said by the rows coming back re-read; only a failure gets a line, and a
+   *  `delete_incomplete` gets both, because it may have removed files or
+   *  dropped records before the file it stopped on. */
   const runRowDelete = useCallback(
     (slug: string, work: () => Promise<BiosDeleteResult>, what: string) => {
       setBusySlug(slug);
@@ -875,16 +886,10 @@ export function usePlatformsPage(): PlatformsPageState {
         (async () => {
           try {
             const result = await work();
-            if (result.success) {
+            if (!result.success) setStatus({ slug, scope: "bios", text: result.message });
+            if (result.success || result.reason === "delete_incomplete") {
               await readPlatform(slug);
-              // Only when something actually went. The event fans out to every
-              // mounted panel and each matching one pays a live
-              // `get_bios_status` for it, so a run that moved no files must
-              // stay silent — the same rule the download path four lines up
-              // keeps.
-              if (result.deleted_count > 0) announceBiosChange(slug);
-            } else {
-              setStatus({ slug, scope: "bios", text: result.message });
+              if ((result.deleted_count ?? 0) > 0) announceBiosChange(slug);
             }
           } catch (e) {
             setStatus({ slug, scope: "bios", text: `Failed to delete ${what}: ${e}` });
