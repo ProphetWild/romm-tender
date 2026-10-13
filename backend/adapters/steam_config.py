@@ -62,7 +62,7 @@ class SteamConfigAdapter:
         os.makedirs(grid, exist_ok=True)
         return grid
 
-    # -- VDF read/write (deprecated — frontend uses SteamClient API) ----------
+    # -- VDF read/write (only read_shortcut_exes, read_shortcut_launch_options and read_shortcut_icons are live) --
 
     def read_shortcuts(self) -> dict[str, Any]:
         path = self.shortcuts_vdf_path()
@@ -94,8 +94,9 @@ class SteamConfigAdapter:
         would find zero of the 828, not half.
 
         And every app id is stored **signed**: 828 of 828 negative, e.g.
-        ``-1875952762``. The conversion below is what every record needs, not an
-        edge case, because every ``SteamClient`` API takes the unsigned form.
+        ``-1875952762``. The conversion in :meth:`_read_shortcut_field` is what
+        every record needs, not an edge case, because every ``SteamClient`` API
+        takes the unsigned form.
 
         This is a read of the file, not of Steam's memory: while Steam runs the
         file is a snapshot it rewrites from memory mid-session and on exit (see
@@ -103,15 +104,7 @@ class SteamConfigAdapter:
         in this session may not be in it yet. Every caller here is asking about
         shortcuts written by earlier sessions.
         """
-        records = self._read_shortcut_records()
-        if records is None:
-            return None
-        exes: dict[int, str] = {}
-        for fields in records:
-            app_id, exe = fields.get("appid"), fields.get("exe")
-            if isinstance(app_id, int) and isinstance(exe, str):
-                exes[to_unsigned_app_id(app_id)] = exe
-        return exes
+        return self._read_shortcut_field("exe", missing=None)
 
     def read_shortcut_launch_options(self) -> dict[int, str] | None:
         """Every non-Steam shortcut's app ID and current ``LaunchOptions``, read off ``shortcuts.vdf``.
@@ -128,15 +121,32 @@ class SteamConfigAdapter:
         promptly after a launch-options write — measured, and what the file
         still cannot tell, in docs/architecture/steam-non-steam-shortcuts.md.
         """
+        return self._read_shortcut_field("launchoptions", missing="")
+
+    def read_shortcut_icons(self) -> dict[int, str] | None:
+        """Every non-Steam shortcut's app ID and the ``icon`` it points at, ``""`` for none.
+
+        Read like :meth:`read_shortcut_exes`, whose docstring holds the file's
+        shapes and what ``None`` means. A record with no ``icon`` key answers
+        ``""``. How soon the file shows a shortcut's new icon is measured in
+        docs/architecture/steam-non-steam-shortcuts.md, "Shortcut icons".
+        """
+        return self._read_shortcut_field("icon", missing="")
+
+    def _read_shortcut_field(self, name: str, *, missing: str | None) -> dict[int, str] | None:
+        """Each shortcut's app ID and its string field *name*; *missing* stands in where it is absent.
+
+        A record without the field is left out when *missing* is ``None``.
+        """
         records = self._read_shortcut_records()
         if records is None:
             return None
-        launch_options: dict[int, str] = {}
+        values: dict[int, str] = {}
         for fields in records:
-            app_id, value = fields.get("appid"), fields.get("launchoptions", "")
+            app_id, value = fields.get("appid"), fields.get(name, missing)
             if isinstance(app_id, int) and isinstance(value, str):
-                launch_options[to_unsigned_app_id(app_id)] = value
-        return launch_options
+                values[to_unsigned_app_id(app_id)] = value
+        return values
 
     def _read_shortcut_records(self) -> list[dict[str, Any]] | None:
         """Every shortcut record in ``shortcuts.vdf``, its keys lower-cased; ``None`` when nothing could be read."""
@@ -174,6 +184,8 @@ class SteamConfigAdapter:
             f.write(vdf.binary_dumps(data))
         os.replace(tmp_path, path)
 
+    # -- Grid files -------------------------------------------------------------
+
     def write_shortcut_icon(self, app_id: int, icon_bytes: bytes) -> str:
         """Write an icon PNG into Steam's grid dir and return its path.
 
@@ -197,6 +209,32 @@ class SteamConfigAdapter:
                 os.remove(tmp_path)
             raise
         return icon_path
+
+    def ensure_grid_file(self, name: str, content: bytes) -> str:
+        """Make Steam's grid dir hold *content* under *name*, and return its path.
+
+        Writes only when the file is missing or holds other bytes, atomically
+        as :meth:`write_shortcut_icon` does. Raises
+        ``lib.errors.SteamGridDirMissingError`` when the Steam grid directory
+        cannot be located.
+        """
+        grid_dir = self.grid_dir()
+        if not grid_dir:
+            raise SteamGridDirMissingError("Cannot find Steam grid directory")
+        path = os.path.join(grid_dir, name)
+        with contextlib.suppress(OSError), open(path, "rb") as existing:
+            if existing.read() == content:
+                return path
+        tmp_path = path + ".tmp"
+        try:
+            with open(tmp_path, "wb") as f:
+                f.write(content)
+            os.replace(tmp_path, path)
+        except Exception:
+            with contextlib.suppress(FileNotFoundError):
+                os.remove(tmp_path)
+            raise
+        return path
 
     # -- Steam Input config ---------------------------------------------------
 
