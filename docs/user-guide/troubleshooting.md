@@ -579,16 +579,25 @@ create an account at steamgriddb.com and copy your API key.
 
 **Symptom**: Some games have full artwork while others are missing hero/logo/wide grid even with an API key configured.
 
-**Explanation**: Automatic matching links your ROM to a SteamGridDB game via its IGDB id, and that cross-reference is
-sometimes missing — especially for obscure ports and regional releases — even when SteamGridDB _does_ have artwork under
-a differently-linked entry.
+**Explanation**: Tender finds a game on SteamGridDB by the SteamGridDB id your RomM server holds for it, and a RomM scan
+stores one when it asked SteamGridDB and found the game there. What a game without one shows is under
+[Artwork](syncing-your-library.md#artwork).
 
-**Fix**: The durable fix is on your RomM server — set the correct SteamGridDB id on the game (or enable the SteamGridDB
-metadata source and rescan). RomM is the source of truth for artwork matching, so Tender picks up the corrected id on
-the next sync or **Refresh Artwork**. When RomM _and_ the IGDB cross-reference both come up empty, **Refresh Artwork**
-opens a picker where you can search SteamGridDB by name and apply a match on the spot — but that pick is temporary and
-is replaced once RomM provides an id for the game. If a game genuinely has no artwork uploaded to SteamGridDB, those
-slots fall back to Steam's defaults — you can contribute artwork there to help the community.
+**Fix**: Give RomM the ids (checked against RomM 5.3.1):
+
+1. In RomM's scan dialog, select **SteamGridDB** among the scan's metadata sources. It is under **Specific**, and it is
+   a separate entry from **Steam**, which is RomM's source for the Steam store.
+2. For games that have no SteamGridDB id yet, run an **Unmatched games** scan with SteamGridDB selected.
+3. Or set it by hand: edit the game in RomM and enter its **SteamGridDB ID**.
+
+Once RomM has the id, tap **Refresh Artwork** on the game's page: it asks RomM for the id and applies that game's
+artwork, and a game still showing Tender's logo as its icon gets its SteamGridDB icon too. Opening the game's page for
+the first time in a session does the same once a sync has brought the id over from RomM. Both hold for a game you have
+not picked in the picker below: a game you picked keeps the picked images on **Refresh Artwork** until you pick again.
+
+For a game SteamGridDB lists under another name, or not at all, a scan may find nothing. **Refresh Artwork** then opens
+a picker where you search SteamGridDB by name and apply a match. If a game genuinely has no artwork uploaded to
+SteamGridDB, those slots fall back to Steam's defaults — you can contribute artwork there to help the community.
 
 ### Artwork not appearing after sync
 

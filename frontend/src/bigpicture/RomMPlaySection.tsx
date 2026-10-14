@@ -527,9 +527,9 @@ export const RomMPlaySection: FC<RomMPlaySectionProps> = ({ appId }) => { // NOS
     setActionPending("artwork");
     const admission = capturePruneLeaseAdmission(`game-detail:${appId}`);
     try {
-      // Step 1: re-download the RomM cover, rename to {app_id}p.png, and
-      // patch cover_path on the registry row so the game info panel can
-      // render the refreshed image.
+      // Re-download the RomM cover, rename to {app_id}p.png, and patch
+      // cover_path on the registry row so the game info panel can render the
+      // refreshed image.
       const coverResult = await refreshCoverArtwork(romId).catch(
         (e): { success: boolean; reason?: WireReason | "exception"; message: string; cover_path?: string } => {
           detach(debugLog(`refreshCoverArtwork rejected: ${e}`));
@@ -547,8 +547,6 @@ export const RomMPlaySection: FC<RomMPlaySectionProps> = ({ appId }) => { // NOS
         detach(debugLog(`refreshCoverArtwork failed: ${coverResult.reason} — ${coverResult.message}`));
       }
 
-      // Step 2: resolve which SGDB game id to use. The backend either picks
-      // one automatically (RomM/IGDB) or hands back manual candidates.
       const resolution = await getSgdbResolution(romId).catch((e): null => {
         detach(debugLog(`getSgdbResolution rejected: ${e}`));
         return null;
