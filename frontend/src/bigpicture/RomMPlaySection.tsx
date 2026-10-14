@@ -29,7 +29,7 @@ import { DiscSelector } from "./DiscSelector";
 import { VersionPicker } from "./VersionPicker";
 import { WarningCard } from "./WarningCard";
 import { SgdbGamePickerModalContent } from "./SgdbGamePickerModal";
-import { applyArtwork, cancelArtworkApply } from "../utils/artwork";
+import { applyArtwork, cancelArtworkApply, fillEmptyArtwork } from "../utils/artwork";
 import { hasAnySaveConflict } from "../utils/saveStatus";
 import { scrollToTop } from "../utils/scrollHelpers";
 import { getEventTarget } from "../utils/events";
@@ -224,13 +224,19 @@ export const RomMPlaySection: FC<RomMPlaySectionProps> = ({ appId }) => { // NOS
     };
   }, [appId]);
 
-  // Auto-apply SGDB artwork on first visit, once per (appId, rom_id) — so a
-  // version switch re-applies for the newly bound rom_id (#1298 item 3). Only
-  // marked applied after success, so a transient failure retries next visit.
+  // Apply SGDB artwork once per (appId, rom_id). A first visit fills only the
+  // empty slots, so an image already there keeps it; a version switch (an
+  // earlier rom_id applied for this appId) replaces every slot, as Refresh
+  // Artwork does. Marked applied once the apply resolves, so a slot whose fetch
+  // failed is asked again in the next session; an apply that throws — cut
+  // short by leaving the page, or a Steam write failing in the replacing apply
+  // — is not marked, and the next visit applies again.
   useEffect(() => {
     const romId = detail.romId;
-    if (!romId || artworkApplied.get(appId) === romId) return;
-    applyArtwork(romId, appId)
+    const appliedRomId = artworkApplied.get(appId);
+    if (!romId || appliedRomId === romId) return;
+    const apply = appliedRomId === undefined ? fillEmptyArtwork : applyArtwork;
+    apply(romId, appId)
       .then(() => {
         artworkApplied.set(appId, romId);
       })

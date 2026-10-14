@@ -8,7 +8,8 @@ games appear in the Steam Library with cover art, metadata, and organized into c
 1. Tender fetches all ROMs from your RomM server (filtered by your enabled platforms)
 2. For each ROM, a Non-Steam shortcut is created in Steam via the SteamClient API — no restart required
 3. Cover art from RomM is applied as the portrait grid image
-4. If you have a SteamGridDB API key configured, hero banners, logos, and wide grid images are also fetched
+4. If you have a SteamGridDB API key configured, a game's hero banner, logo and wide grid image arrive the first time
+   its page is opened (see [Artwork](#artwork))
 5. Metadata (description, developer, genres, release date) is cached and displayed in Tender's custom game detail panel
 6. Steam collections are created per platform (e.g. "RomM: Game Boy Advance (steamdeck)")
 
@@ -466,8 +467,15 @@ again for a game SteamGridDB had none for; **Refresh Artwork** does, and so does
 Tender already knows on SteamGridDB (opening the page also replaces an icon you set yourself). A game that had no icon
 at all before shows its first one after Steam restarts, which switching between Game Mode and Desktop Mode does.
 
+The hero banner, logo and wide grid are set the first time a game's page is opened in a session, and only where the game
+has none yet: an image you set yourself, in Steam's own artwork options or with another tool, stays, until you switch
+the game to another version, which replaces all three. When SteamGridDB has no logo or wide grid for a game, or Steam
+does not accept the image, opening the page does not ask again for a week, or until the game's SteamGridDB match
+changes.
+
 You can refresh artwork for any individual game from its
-[game detail page](managing-games.md#refreshing-artwork-and-metadata).
+[game detail page](managing-games.md#refreshing-artwork-and-metadata); that replaces every image, one you set yourself
+included.
 
 ## Re-Syncing
 

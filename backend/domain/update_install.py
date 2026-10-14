@@ -138,9 +138,10 @@ _CLAIMS_NAMED_BY_A_REASON: Mapping[str, WaitReason] = MappingProxyType(
                 "adopt_existing_rom",
                 "installed_reconcile",
                 "launch_reconfirm",
-                # Artwork and shortcut settings written to disk or to Steam.
+                # Artwork and shortcut settings written to disk, to Steam or to their record.
                 "apply_sgdb_game_id",
                 "sgdb_artwork",
+                "report_sgdb_slot_artwork",
                 "refresh_cover_artwork",
                 "save_shortcut_icon",
                 "shortcut_icons",
@@ -165,7 +166,9 @@ _CLAIMS_NAMED_BY_A_REASON: Mapping[str, WaitReason] = MappingProxyType(
 
 # The claims whose own work only reads — or writes a cache it can build again —
 # so a restart cuts nothing short, and they make no press wait. A lease one of
-# them hands out for the frontend's Steam write is a claim of its own above.
+# them hands out for the frontend's Steam write is a claim of its own above. An
+# artwork slot's `none` record, and Refresh Artwork's deletion of the records,
+# count as cache: losing either only changes when SteamGridDB is asked again.
 READ_ONLY_CLAIMS: frozenset[str] = frozenset(
     {
         "fetch_cover_base64",
@@ -175,6 +178,7 @@ READ_ONLY_CLAIMS: frozenset[str] = frozenset(
         "get_save_status",
         "get_sgdb_artwork_base64",
         "get_sgdb_resolution",
+        "get_sgdb_slot_artwork",
         "refresh_save_status",
         "test_connection",
     }
