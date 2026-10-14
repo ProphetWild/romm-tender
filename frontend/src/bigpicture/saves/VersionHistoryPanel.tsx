@@ -4,11 +4,11 @@
  * fallback to the standard sync-conflict modal).
  */
 
-import { useState, useEffect, FC, type ReactElement } from "react";
+import { useState, useEffect, useRef, FC, type ReactElement } from "react";
 import { DialogButton } from "@decky/ui";
 import { showToast } from "../../utils/toast";
-import { debugLog, savesListFileVersions, savesRollbackToVersion } from "../../api/backend";
-import type { SaveVersionEntry, RollbackStatus, ListFileVersionsResult } from "../../types";
+import { debugLog, isEndpointFailure, savesListFileVersions, savesRollbackToVersion } from "../../api/backend";
+import type { SaveVersionEntry, ListFileVersionsResult } from "../../types";
 import { showSyncConflictModal } from "../../shared/SyncConflictModal";
 import { scrollFocusedToCenter } from "../../utils/scrollHelpers";
 import { formatBytes, formatTimestamp } from "../../utils/formatters";
@@ -36,6 +36,15 @@ export const VersionHistoryPanel: FC<VersionHistoryPanelProps> = ({
   onCopy,
 }) => {
   const [expanded, setExpanded] = useState(false);
+  // The open state as of this moment, for the change listener below: a restore
+  // closes the panel and announces the change in the same turn, before React
+  // re-renders, so the listener's own `expanded` would still read it as open
+  // and reload the list the restore just dropped.
+  const expandedRef = useRef(false);
+  const setOpen = (open: boolean) => {
+    expandedRef.current = open;
+    setExpanded(open);
+  };
   const [versions, setVersions] = useState<SaveVersionEntry[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [restoring, setRestoring] = useState<number | null>(null);
@@ -75,37 +84,36 @@ export const VersionHistoryPanel: FC<VersionHistoryPanelProps> = ({
 
   const handleToggle = async () => {
     const willExpand = !expanded;
-    setExpanded(willExpand);
+    setOpen(willExpand);
     if (willExpand && versions === null && loadError === null && !isOffline) {
       await loadVersions();
     }
   };
 
-  // Self-refresh when this ROM's saves change. A copy into this slot (or a sync
-  // / external rollback) adds or removes a version, but the list is cached on
+  // Self-refresh when this ROM's saves change. A copy into this slot, a restore
+  // on this tab, or a sync adds or removes a version, but the list is cached on
   // first expand — without this it stays stale in-session until the game page is
   // re-entered. The signal is a DOM CustomEvent (`globalThis.dispatchEvent`),
   // NOT a backend emit, so we listen on `globalThis`. Invalidate on any
   // change for this ROM; reload immediately when the panel is open, otherwise the
-  // next expand lazy-loads the fresh list. `expanded` is a dep so the handler
-  // always sees the live open/closed state (re-subscribing on toggle is cheap).
+  // next expand lazy-loads the fresh list.
   useEffect(() => {
     const onDataChanged = (e: Event) => {
       const detail = (e as CustomEvent).detail;
       if (detail?.rom_id !== romId) return;
       setVersions(null);
       setLoadError(null);
-      if (expanded && !isOffline) detach(loadVersions());
+      if (expandedRef.current && !isOffline) detach(loadVersions());
     };
     globalThis.addEventListener("romm_data_changed", onDataChanged);
     return () => globalThis.removeEventListener("romm_data_changed", onDataChanged);
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- loadVersions is stable per (romId, slot, filename); romId/isOffline/expanded are the real deps
-  }, [romId, isOffline, expanded]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- loadVersions is stable per (romId, slot, filename); romId/isOffline are the real deps
+  }, [romId, isOffline]);
 
   const handleRestore = async (version: SaveVersionEntry) => {
     setRestoring(version.id);
     try {
-      const result: RollbackStatus = await savesRollbackToVersion(romId, slot, version.id);
+      const result = await savesRollbackToVersion(romId, slot, version.id);
       const feedback = rollbackFeedback(result, version.updated_at);
       if (feedback === null) return;
       if (feedback.kind === "conflict") {
@@ -116,9 +124,9 @@ export const VersionHistoryPanel: FC<VersionHistoryPanelProps> = ({
       // `put_failed` refreshes too: the local download succeeded and only the
       // server-side bump did not, so the switch is locally complete — it just
       // won't reach other devices yet.
-      if (result.status === "ok" || result.status === "put_failed") {
+      if (!isEndpointFailure(result) && (result.status === "ok" || result.status === "put_failed")) {
         setVersions(null);
-        setExpanded(false);
+        setOpen(false);
         onRestored();
       }
     } catch (e) {
