@@ -375,3 +375,62 @@ class TestPauseGuidanceNamesNoControl:
         from services.library.session_budget import SYNC_PAUSED_BUDGET
 
         assert SYNC_PAUSED_BUDGET.endswith(".")
+
+
+class TestTheShortcutArtworkJobsReading:
+    """``LibraryService.renderer_above_ceiling``: the reading the shortcut artwork job takes before each batch."""
+
+    @pytest.mark.asyncio
+    async def test_at_the_ceiling_after_steam_collected_its_garbage(self, library):
+        from domain.session_budget import EFFECTIVE_CEILING_KB
+
+        library.renderer_rss.rss_kb = EFFECTIVE_CEILING_KB
+
+        assert await library.sync.renderer_above_ceiling() is True
+        assert library.renderer_gc.calls == 1
+
+    @pytest.mark.asyncio
+    async def test_below_the_ceiling(self, library):
+        from domain.session_budget import EFFECTIVE_CEILING_KB
+
+        library.renderer_rss.rss_kb = EFFECTIVE_CEILING_KB - 1
+
+        assert await library.sync.renderer_above_ceiling() is False
+
+    @pytest.mark.asyncio
+    async def test_no_reading_is_not_above_it(self, library):
+        library.renderer_rss.rss_kb = None
+
+        assert await library.sync.renderer_above_ceiling() is False
+
+    @pytest.mark.asyncio
+    async def test_a_reading_after_an_unavailable_one_is_still_taken(self, library):
+        from domain.session_budget import EFFECTIVE_CEILING_KB
+
+        library.renderer_rss.rss_kb = None
+        await library.sync.renderer_above_ceiling()
+        library.renderer_rss.rss_kb = EFFECTIVE_CEILING_KB
+
+        assert await library.sync.renderer_above_ceiling() is True
+
+    @pytest.mark.asyncio
+    async def test_it_leaves_the_sync_runs_unavailable_latch_alone(self, library):
+        box = library.sync._box
+        library.renderer_rss.rss_kb = None
+
+        await library.sync.renderer_above_ceiling()
+        assert box.budget_measure_unavailable_logged is False
+
+        box.budget_measure_unavailable_logged = True
+        library.renderer_rss.rss_kb = 1_000_000
+        await library.sync.renderer_above_ceiling()
+        assert library.renderer_rss.calls == 2
+
+    @pytest.mark.asyncio
+    async def test_a_seam_that_raises_is_not_above_it(self, library):
+        def unreadable() -> int:
+            raise OSError("no /proc")
+
+        library.sync._session_budget._renderer_rss = unreadable
+
+        assert await library.sync.renderer_above_ceiling() is False

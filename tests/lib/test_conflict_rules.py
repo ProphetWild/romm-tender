@@ -296,6 +296,20 @@ async def test_an_event_somebody_heard_keeps_the_lease_its_token_names():
     assert rules.conflicts.conflicting_operations == 0
 
 
+async def test_waiting_for_an_events_lease_ends_once_the_frontend_gives_it_back():
+    rules = _Rules()
+    emit = _Emit()
+    await rules.rules.emit_under_lease("download_complete", emit)
+    (token,) = emit.tokens
+    waiting = asyncio.create_task(rules.rules.wait_for_lease_end(token))
+    await asyncio.sleep(0)
+    assert not waiting.done()
+
+    await rules.rules.release_lease(token)
+
+    await asyncio.wait_for(waiting, timeout=5)
+
+
 async def test_an_event_nobody_heard_gives_its_lease_back():
     rules = _Rules()
 
@@ -360,14 +374,14 @@ async def test_a_held_operation_refuses_the_start_naming_its_holder():
 
 async def test_a_shortcut_icon_hand_over_refuses_the_start_naming_it():
     rules = _Rules()
-    await rules.rules.acquire_lease("shortcut_icons")
+    await rules.rules.acquire_lease("shortcut_artwork")
 
     refusal = await _start_refusal(rules.rules, migration=True, sync=True)
 
     assert _said(refusal) == (
         "operation_active",
         (
-            "Another local-data operation is in progress (setting shortcut icons); wait for it to finish before "
+            "Another local-data operation is in progress (setting shortcut artwork); wait for it to finish before "
             "starting cleanup."
         ),
         {},

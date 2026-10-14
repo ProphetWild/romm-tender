@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
     from contextlib import AbstractAsyncContextManager
 
+    from domain.artwork_slot import ArtworkSlot
     from domain.disc_selection import Disc
     from domain.emulator_commands import LaunchingEmulator
     from domain.emulator_sources import SourcesReading
@@ -25,7 +26,7 @@ if TYPE_CHECKING:
     from domain.update_release import LatestRelease
     from lib.partial_failure import PartialFailure
     from models.prune import InstalledContentRemoval, SaveQuarantine, SourceClaim
-    from models.shortcut_icon import IconFetch
+    from models.shortcut_artwork import IconFetch, SlotAnswer
     from models.state import ShortcutRegistryEntry
     from models.sync import ClientSaveState
 
@@ -765,8 +766,8 @@ class PlaytimeScopeNoticeClearFn(Protocol):
     def __call__(self) -> None: ...
 
 
-class ShortcutIconSource(Protocol):
-    """What the shortcut icon job asks of the SteamGridDB service: the icon, and a write the game page can overrule."""
+class ShortcutArtworkSource(Protocol):
+    """What the shortcut artwork job asks of the SteamGridDB service: an icon it may write, and a wide grid or logo."""
 
     def icon_generation(self, app_id: int) -> int:
         """How many icons the game page has saved for *app_id* in this process."""
@@ -789,9 +790,44 @@ class ShortcutIconSource(Protocol):
         """Write the icon unless the game page saved one since *generation*; answer its path or ``None``."""
         ...
 
+    def do_fetch_slot_artwork(self, rom_id: int, slot: ArtworkSlot) -> SlotAnswer:
+        """Put SteamGridDB's image for *rom_id*'s wide grid or logo into the artwork cache, and say what came of it.
 
-class ShortcutIconJob(Protocol):
-    """What a sync, a removed-game cleanup and a shortcut removal ask of the shortcut icon job."""
+        Downloads only what the cache does not hold, by the one rule the game
+        page uses. ``READY`` once the cache holds it, for the frontend to fetch
+        through ``get_sgdb_slot_artwork``; ``NONE``, recorded, when SteamGridDB
+        has no candidate or does not know the game, or the ROM has no
+        SteamGridDB id stored (no request then); a 429 ``RATE_LIMITED``; a 401
+        or 403 ``KEY_REFUSED``; anything else ``FAILED``, unrecorded.
+        Synchronous — callers on the loop offload it.
+        """
+        ...
+
+
+class RendererAboveCeilingFn(Protocol):
+    """Whether Steam's renderer memory stands at or above the session budget's ceiling, by a GC-settled reading.
+
+    The composition root satisfies this with ``LibraryService.renderer_above_ceiling``,
+    which asks the sync's own ``SessionBudgetMonitor``. ``False`` when the
+    reading cannot be taken.
+    """
+
+    async def __call__(self) -> bool: ...
+
+
+class RendererAboveCeilingProvider(Protocol):
+    """Late-bound :class:`RendererAboveCeilingFn` getter consumed by the shortcut artwork job.
+
+    The job is built before the library service it reads through, so bootstrap
+    hands it this getter (a ``LateBinding``). Each call returns the live
+    :class:`RendererAboveCeilingFn`.
+    """
+
+    def __call__(self) -> RendererAboveCeilingFn: ...
+
+
+class ShortcutArtworkJob(Protocol):
+    """What a sync, a removed-game cleanup and a shortcut removal ask of the shortcut artwork job."""
 
     def request_run(self, *, settle: bool = False) -> None:
         """Run the job, or run it again once the run under way ends; *settle* waits for Steam's file to catch up."""
@@ -800,10 +836,11 @@ class ShortcutIconJob(Protocol):
     async def stop_for_cleanup(self) -> None:
         """Stop the job, start no run until :meth:`resume_after_cleanup`, and wait for a write or hand-over under way.
 
-        A cleanup calls it before it reserves its start, so no icon the job
+        A cleanup calls it before it reserves its start, so nothing the job
         writes into the grid directory or hands over lands once it has. A fetch
         in flight is abandoned, though its thread runs on and may still fill the
-        artwork cache or save the game's SteamGridDB id.
+        artwork cache, save the game's SteamGridDB id, or record that SteamGridDB
+        has no wide grid or logo for it.
         """
         ...
 

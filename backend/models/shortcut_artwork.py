@@ -1,0 +1,44 @@
+"""What one SteamGridDB icon fetch, or one wide grid or logo fetch, for a ROM answered."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from enum import StrEnum
+
+
+class IconAnswer(StrEnum):
+    """The five answers the artwork job acts on differently for an icon."""
+
+    ICON = "icon"
+    """SteamGridDB had an icon; ``IconFetch.data`` holds it, downscaled."""
+    NO_ICON = "no_icon"
+    """No icon on SteamGridDB, or no game for the ROM: the job gives the logo icon, and stops asking once it is set."""
+    RATE_LIMITED = "rate_limited"
+    """SteamGridDB answered 429. Wait, then ask again."""
+    KEY_REFUSED = "key_refused"
+    """SteamGridDB answered 401 or 403: the API key is not accepted, so the run ends."""
+    FAILED = "failed"
+    """Anything else — a network failure, a server error, a download that broke. Asked again next run."""
+
+
+@dataclass(frozen=True)
+class IconFetch:
+    """One fetch's answer, with the icon's bytes where there was one."""
+
+    answer: IconAnswer
+    data: bytes | None = None
+
+
+class SlotAnswer(StrEnum):
+    """The five answers the artwork job acts on differently for a wide grid or a logo."""
+
+    READY = "ready"
+    """The artwork cache holds the image; the frontend fetches it through ``get_sgdb_slot_artwork``."""
+    NONE = "none"
+    """SteamGridDB has no candidate, does not know the game, or the ROM has no SteamGridDB id; recorded."""
+    RATE_LIMITED = "rate_limited"
+    """SteamGridDB answered 429. Wait, then ask again."""
+    KEY_REFUSED = "key_refused"
+    """SteamGridDB answered 401 or 403: the API key is not accepted, so the run ends."""
+    FAILED = "failed"
+    """Anything else. Nothing is recorded, so the next run asks again."""
