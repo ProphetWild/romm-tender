@@ -967,7 +967,6 @@ export interface PrunePreviewResult {
 export interface StartPruneRequest {
   preview_id: string;
   confirmed: boolean;
-  repoint_shortcuts: boolean;
   remove_rows: boolean;
   remove_fully_vanished: boolean;
   create_recovery_bundle: boolean;
@@ -1005,9 +1004,8 @@ export interface ClaimPruneActionRequest {
   phase: "claim";
   run_id: string;
   action_token: string;
-  action: "capture_shortcut_snapshot" | "repoint_shortcut" | "remove_shortcut";
+  action: "capture_shortcut_snapshot" | "remove_shortcut";
   app_id: number;
-  target_rom_id: number | null;
 }
 
 export interface CompletePruneActionRequest {
@@ -1046,9 +1044,6 @@ export const reportPruneAction = endpoint<
   [ReportPruneActionRequest],
   { success: boolean; ignored?: boolean; reason?: WireReason; message: string }
 >("report_prune_action");
-export const waitForPruneRelease = endpoint<[string], { success: boolean; reason?: WireReason; message: string }>(
-  "wait_for_prune_release",
-);
 
 export const saveLogLevel = endpoint<[string], { success: boolean }>("save_log_level");
 // Preferred sibling-group region (ADR-0021 §3). "auto" = build-time default

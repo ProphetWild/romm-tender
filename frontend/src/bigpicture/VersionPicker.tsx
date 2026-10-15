@@ -52,7 +52,7 @@ import { reportServerReachable } from "../utils/connectionState";
 import { applyCommittedVersionSwitch } from "../utils/versionSwitchApplication";
 import { showUnsyncedSavesModal } from "./UnsyncedSavesSwitchModal";
 import { getEventTarget } from "../utils/events";
-import { setBoundVanished } from "../utils/vanishedBinding";
+import { boundAvailabilityOf, setBoundAvailability } from "../utils/vanishedBinding";
 import { NO_FILE_ON_ROMM_LABEL } from "../utils/noFileOnRommWording";
 import { detach } from "../utils/detach";
 import {
@@ -64,7 +64,8 @@ import {
   type PruneLeaseAdmission,
 } from "../utils/pruneLease";
 import type { RommDataChangedDetail, RommRomUninstalledDetail } from "../types/events";
-import type { DownloadCompleteEvent, DownloadFailedEvent } from "../types";
+import type { DownloadCompleteEvent, DownloadFailedEvent, SyncProgress } from "../types";
+import { isTerminalStage } from "../utils/syncProgress";
 import { openRemovedGamesCleanupModal } from "./RemovedGamesCleanup";
 
 interface VersionPickerProps {
@@ -169,8 +170,9 @@ export const VersionPicker: FC<VersionPickerProps> = ({ appId }) => {
     load: (source?: "normal" | "vanished_refusal") => Promise<void>;
   } | null>(null);
 
-  // Initial load + refresh on a version switch (this or another surface). The
-  // effect owns the loader lifetime for this appId. All request sources share one
+  // Initial load + refresh on a version switch (this or another surface) and at
+  // the end of a library sync run. The effect owns the loader lifetime for this
+  // appId. All request sources share one
   // generation so only the latest completion can publish list/reachability state.
   useEffect(() => {
     mountPruneLeaseOwner(leaseOwner);
@@ -188,11 +190,11 @@ export const VersionPicker: FC<VersionPickerProps> = ({ appId }) => {
         // direction into the global store. A single/unbound group carries no
         // reachability signal.
         reportVersionListReachability(result);
-        // Publish the bound-id verdict for the play button, which sits beside
-        // this picker and cannot see its state. Only a positive `bound_vanished`
-        // is knowledge — a failed query reports false, so an offline session
-        // never disables the download (#1570 F20).
-        setBoundVanished(appId, result.bound_vanished);
+        // Publish the bound-id verdict for the play button and the banner, which
+        // cannot see this picker's state. Only a positive `bound_vanished` is
+        // knowledge — a failed query reports false, so an offline session never
+        // disables the download (#1570 F20).
+        setBoundAvailability(appId, boundAvailabilityOf(result));
         memberIdsRef.current = new Set((result.versions ?? []).map((v) => v.rom_id));
         setVersionList(result);
       } catch (e) {
@@ -239,6 +241,12 @@ export const VersionPicker: FC<VersionPickerProps> = ({ appId }) => {
     const onUninstalled = (e: Event) => onInstallChanged((e as CustomEvent<RommRomUninstalledDetail>).detail.rom_id);
     globalThis.addEventListener("romm_rom_uninstalled", onUninstalled);
 
+    // A library sync can find the bound version gone, or back, while this page
+    // is open; ask again when a run ends so the banner follows it.
+    const syncEnded = addEventListener<SyncProgress>("sync_progress", (frame) => {
+      if (!frame.running && isTerminalStage(frame.stage)) detach(load());
+    });
+
     return () => {
       cancelled = true;
       detach(releasePruneLeasesByOwner(leaseOwner));
@@ -247,6 +255,7 @@ export const VersionPicker: FC<VersionPickerProps> = ({ appId }) => {
       removeEventListener("download_complete", dlComplete);
       removeEventListener("download_failed", dlFailed);
       globalThis.removeEventListener("romm_rom_uninstalled", onUninstalled);
+      removeEventListener("sync_progress", syncEnded);
     };
   }, [appId, leaseOwner]);
 

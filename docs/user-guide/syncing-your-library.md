@@ -487,10 +487,34 @@ one you set yourself included.
 
 ## Re-Syncing
 
-Running sync again updates your library with any changes from RomM (new ROMs, removed platforms, etc.). Existing
-shortcuts are updated rather than duplicated. If the specific version a shortcut pointed at is removed from RomM but the
-game still has other versions on the server, the shortcut is **kept** and quietly re-pointed at a surviving version — it
-is not torn down and re-created, so its artwork, collections, and playtime are preserved.
+Running sync again updates your library with any changes from RomM (new ROMs, renamed games, new artwork, and so on),
+and with the platforms and collections you turned on or off. Existing shortcuts are updated rather than duplicated.
+
+When the version a shortcut is bound to is no longer available on RomM — deleted there, or hidden from your RomM user,
+which RomM answers the same way — the shortcut **stays bound to it**, installed or not, with its name, launch command,
+artwork and playtime, and in its platform's Steam collection — a Steam collection made from a RomM collection drops it,
+since RomM no longer lists it there. That holds when the game still has other versions on RomM and when every version of
+it is gone. The game's page says the version is no longer available and what that means for a downloaded copy; to play
+another version, choose it in the [version picker](managing-games.md#the-switch-version-control), and to remove the
+game, use [Clean Up Removed RomM Games](managing-games.md#cleaning-up-versions-removed-from-romm).
+
+A platform RomM no longer lists at all is gone from RomM rather than turned off, even while it is still on in Tender:
+its games keep their shortcuts and their place in its Steam collection, each game's page says the game is no longer
+available, and only the cleanup removes them. A game on it that came in through a collection is asked about by its id,
+as described below.
+
+One case still moves the shortcut: the same file coming back under a new id, as after a server switch or a re-import.
+Where RomM serves a version of the same game with exactly the old file name, the shortcut follows it and keeps its
+appId, artwork, collections and playtime. If the old version was downloaded, its file is already where the new one would
+land, so the new version's page offers **Use Existing Files** instead of a download.
+
+What a sync still removes is a game outside what you sync: its platform is turned off and no enabled collection holds
+it. A game a collection brought in, that no collection returns any more, is asked for by its id: if RomM still has it,
+it left the collection and its shortcut is removed; if RomM answers that it is gone, or does not answer, the shortcut
+stays, and the next sync asks again. Tender remembers whether a game last came in through its platform or through a
+collection; a game it has no such record for yet, as after the update that added it, is judged by the collections' last
+completed sync instead. A platform that holds a version gone from RomM is read in full on every sync while that version
+stays bound, so it does not skip the way an unchanged platform does.
 
 Sync itself never purges a retained local ROM row, installed content, saves, or playtime solely because RomM stopped
 returning that id. Removing that state requires the separate confirmed
