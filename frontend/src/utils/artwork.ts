@@ -150,9 +150,9 @@ async function applySgdbArtwork(romId: number, appId: number): Promise<number | 
 
       // SGDB types 1-3 (hero / logo / wide grid) map 1:1 to Steam capsule assetTypes 1-3.
       // The wide grid and the logo are recorded as the fill path records them;
-      // the hero is not. The awaits are sequential by design, one image at a
-      // time; S9382 is raised on the slot's await line, so its NOSONAR stays
-      // there.
+      // the hero and the icon are not. The awaits are sequential by design, one
+      // image at a time; S9382 is raised on the slot's await line, so its
+      // NOSONAR stays there.
       const customArt: Array<[answer: SgdbArtwork, assetType: number, slot: RecordedSlot | null]> = [
         [results[0], 1, null],
         [results[1], 2, "logo"],
@@ -186,7 +186,7 @@ type SgdbArtwork = Exclude<Awaited<ReturnType<typeof getSgdbArtworkBase64>>, End
 /** The answer a fetch that was rejected or refused counts as. */
 const NO_IMAGE: SgdbArtwork = { base64: null, no_api_key: false };
 
-/** The slots whose outcome the backend records. */
+/** The slots whose outcome the game page reports; the icon's is reported by the shortcut artwork job alone. */
 type RecordedSlot = "grid" | "logo";
 
 /**
@@ -341,12 +341,15 @@ async function setSlotImage(
   }
 }
 
-/** Report what Steam made of the image for the backend to record. */
-async function reportSlotOutcome(
+/**
+ * Report what Steam made of an image for the backend to record, passing back the SteamGridDB ids and the hash the
+ * backend answered with it; a report that fails is logged.
+ */
+export async function reportSlotOutcome(
   romId: number,
-  slot: RecordedSlot,
+  slot: RecordedSlot | "icon",
   outcome: "set" | "refused",
-  image: SlotImage,
+  image: { sgdb_id: number | null; image_id: number | null; sha256: string },
 ): Promise<void> {
   await reportSgdbSlotArtwork(romId, slot, outcome, image.sgdb_id, image.image_id, image.sha256).catch((e) => {
     detach(debugLog(`Artwork: reporting the ${slot} for rom ${romId} failed: ${e}`));
