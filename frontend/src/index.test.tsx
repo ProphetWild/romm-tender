@@ -203,12 +203,19 @@ vi.mock("./bigpicture/MainPage", () => ({
     );
   },
 }));
-vi.mock("./bigpicture/DownloadQueue", () => ({
-  DownloadQueue: () => {
-    pageRenders++;
-    return createElement("div", null, "downloads page");
-  },
-}));
+// The page reports what the router told it about entry focus, which is how the
+// panel's side of that handshake is seen.
+vi.mock("./bigpicture/DownloadQueue", async () => {
+  const { useContext } = await import("react");
+  const { EntryFocusOnMountContext } = await import("./utils/entryFocus");
+  return {
+    DownloadQueue: () => {
+      pageRenders++;
+      const placesEntryFocus = useContext(EntryFocusOnMountContext);
+      return createElement("div", { "data-entry-focus-on-mount": String(placesEntryFocus) }, "downloads page");
+    },
+  };
+});
 const relocateShortcutsToLauncher = vi.fn().mockResolvedValue({ status: "relocated" });
 vi.mock("./utils/launcherRelocation", () => ({
   relocateShortcutsToLauncher: () => relocateShortcutsToLauncher(),
@@ -3018,11 +3025,28 @@ describe("index.tsx — where entry focus lands on a page swap", () => {
     mainPageDeclaresEntryStop = false;
   });
 
+  // To Downloads and back on B: Main mounted by a swap rather than with the
+  // panel, which places no focus at all.
+  async function swapAwayFromMainAndBack(): Promise<void> {
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "go to downloads" }));
+      await vi.advanceTimersByTimeAsync(50);
+    });
+    await act(async () => {
+      fireEvent(
+        screen.getByText("downloads page"),
+        new CustomEvent("decky-button-down", { detail: { button: 2 }, bubbles: true }),
+      );
+      await Promise.resolve();
+    });
+  }
+
   it("focuses the mounted page's first button", async () => {
     vi.useFakeTimers();
     try {
       const panel = panelFactory();
       render(panel.content);
+      await swapAwayFromMainAndBack();
 
       // Steam's gamepad nav keeps a focus pointer across page swaps and would
       // otherwise resolve it onto whatever sits at the old page's position.
@@ -3044,6 +3068,7 @@ describe("index.tsx — where entry focus lands on a page swap", () => {
       mainPageDeclaresEntryStop = true;
       const panel = panelFactory();
       render(panel.content);
+      await swapAwayFromMainAndBack();
 
       // The router still does the placing — the page only says where. Main is
       // the one page that says anything: its status rows act on nothing, so
@@ -3108,6 +3133,7 @@ describe("index.tsx — where entry focus lands on a page swap", () => {
       mainPageOwnsEntryFocus = true;
       const panel = panelFactory();
       render(panel.content);
+      await swapAwayFromMainAndBack();
 
       // A wide page's first button is its Back row, which sits above the tabs
       // and so outside Steam's tabbed page — landing there would hide the L1/R1
@@ -3119,6 +3145,133 @@ describe("index.tsx — where entry focus lands on a page swap", () => {
 
       expect(btn).not.toHaveFocus();
       expect(btn).not.toHaveClass("gpfocus");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("index.tsx — the panel appearing places no focus", () => {
+  // Steam mounts the panel as soon as the Quick Access strip highlights
+  // Tender's Quick Access entry, so focus placed on that mount takes the reader
+  // off the strip on the way past. Entering is Steam's, by the stop the page
+  // marks preferred.
+  beforeEach(() => {
+    mainPageOwnsEntryFocus = false;
+    mainPageDeclaresEntryStop = true;
+  });
+
+  it("leaves focus alone on Main, its declared stop included", async () => {
+    vi.useFakeTimers();
+    try {
+      const panel = panelFactory();
+      render(panel.content);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(50);
+      });
+
+      expect(screen.getByRole("button", { name: "go to downloads" })).not.toHaveFocus();
+      expect(screen.getByRole("button", { name: "first button" })).not.toHaveFocus();
+      expect(document.querySelector(".gpfocus")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("puts Steam's entry preference on the router's Focusable around a page", async () => {
+    const panel = panelFactory();
+    render(panel.content);
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "go to downloads" }));
+      await Promise.resolve();
+    });
+
+    // The search starts at the router's Focusable, which is the same one that
+    // takes B back to Main.
+    expect(screen.getByText("downloads page").closest('[data-nav-entry-prefer-position="4"]')).not.toBeNull();
+
+    await act(async () => {
+      fireEvent(
+        screen.getByText("downloads page"),
+        new CustomEvent("decky-button-down", { detail: { button: 2 }, bubbles: true }),
+      );
+      await Promise.resolve();
+    });
+    expect(screen.getByRole("button", { name: "first button" })).toBeInTheDocument();
+  });
+
+  it("drops Steam's entry preference once focus first enters the panel, and a new panel marks it again", async () => {
+    const first = render(panelFactory().content);
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "go to downloads" }));
+      await Promise.resolve();
+    });
+    const preferring = () => document.querySelector('[data-nav-entry-prefer-position="4"]');
+    expect(preferring()).not.toBeNull();
+
+    // Steam's search for the marked node runs ahead of the child it remembers,
+    // so a mark left in place would pull every later entry — focus back from a
+    // closed dialog — onto it.
+    act(() => {
+      fireEvent.focusIn(screen.getByText("downloads page"));
+    });
+    expect(preferring()).toBeNull();
+
+    first.unmount();
+    render(panelFactory().content);
+    expect(preferring()).not.toBeNull();
+
+    await act(async () => {
+      fireEvent(
+        screen.getByText("downloads page"),
+        new CustomEvent("decky-button-down", { detail: { button: 2 }, bubbles: true }),
+      );
+      await Promise.resolve();
+    });
+    expect(screen.getByRole("button", { name: "first button" })).toBeInTheDocument();
+  });
+
+  it("tells a page whether a swap opened it, also after the panel remounts on it", async () => {
+    // The module-level page survives a remount, so a panel can appear on a page
+    // other than Main — and that page must not place focus either.
+    const first = render(panelFactory().content);
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "go to downloads" }));
+      await Promise.resolve();
+    });
+    expect(screen.getByText("downloads page")).toHaveAttribute("data-entry-focus-on-mount", "true");
+
+    first.unmount();
+    render(panelFactory().content);
+    expect(screen.getByText("downloads page")).toHaveAttribute("data-entry-focus-on-mount", "false");
+
+    await act(async () => {
+      fireEvent(
+        screen.getByText("downloads page"),
+        new CustomEvent("decky-button-down", { detail: { button: 2 }, bubbles: true }),
+      );
+      await Promise.resolve();
+    });
+    expect(screen.getByRole("button", { name: "first button" })).toBeInTheDocument();
+  });
+
+  it("leaves focus alone on the stranded card", async () => {
+    vi.useFakeTimers();
+    try {
+      setStrandedAnswer("reloads");
+      const panel = panelFactory();
+      const { container } = render(panel.content);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(50);
+      });
+
+      // The card is a stop of its own, so a placement would have found it.
+      const card = container.querySelector<HTMLElement>('[tabindex="0"]');
+      expect(card).not.toBeNull();
+      expect(card).not.toHaveFocus();
+      expect(document.querySelector(".gpfocus")).toBeNull();
     } finally {
       vi.useRealTimers();
     }
