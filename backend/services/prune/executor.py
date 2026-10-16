@@ -180,6 +180,7 @@ class PruneExecutor:
             await self._finish_run(
                 run_id,
                 results,
+                preview.candidate_ids,
                 cancelled=True,
                 reason="cancelled",
                 message="Cleanup was cancelled; no unstarted destructive phase was run.",
@@ -190,12 +191,13 @@ class PruneExecutor:
             await self._finish_run(
                 run_id,
                 results,
+                preview.candidate_ids,
                 cancelled=False,
                 reason=ErrorCode.UNKNOWN.value,
                 message=str(exc),
             )
         else:
-            await self._finish_run(run_id, results, cancelled=False, reason=None, message=None)
+            await self._finish_run(run_id, results, preview.candidate_ids, cancelled=False, reason=None, message=None)
 
     def _log_run_start(self, run_id: str, preview: PrunePreview, options: PruneOptions, groups: int) -> None:
         """Open this run's audit trail.
@@ -237,6 +239,7 @@ class PruneExecutor:
         self,
         run_id: str,
         results: list[dict[str, Any]],
+        candidate_ids: frozenset[int],
         *,
         cancelled: bool,
         reason: str | None,
@@ -244,6 +247,7 @@ class PruneExecutor:
     ) -> None:
         self._log_run_end(run_id, results, cancelled=cancelled, reason=reason, message=message)
         try:
+            await self._write_gone_marks(candidate_ids)
             await self._results.emit_completion(run_id, results, cancelled=cancelled, reason=reason, message=message)
         except asyncio.CancelledError:
             raise
@@ -258,6 +262,24 @@ class PruneExecutor:
         finally:
             self._liveness.end_run()
             self._results.end_run()
+
+    async def _write_gone_marks(self, candidate_ids: frozenset[int]) -> None:
+        """Mark what this run proved gone outside *candidate_ids*, and clear what it found on RomM.
+
+        An id answered both ways in one run is left as it was. Why this runs
+        before the completion frame is docs/architecture/removed-game-cleanup.md,
+        "Discovery". A failure costs only those entries, which the next run proves
+        again, so it is logged and the run still completes.
+        """
+        live = self._liveness.live_rom_ids()
+        gone = self._liveness.gone_rom_ids()
+        try:
+            await self._loop.run_in_executor(
+                None,
+                partial(self._registry.write_gone_marks, mark=gone - live - candidate_ids, clear=live - gone),
+            )
+        except Exception as exc:
+            self._logger.warning(f"Removed-game cleanup could not write the gone-from-RomM marks: {exc}")
 
     def _log_run_end(
         self,

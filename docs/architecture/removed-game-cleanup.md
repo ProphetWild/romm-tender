@@ -106,10 +106,11 @@ namespace — a namespace change is uncertainty, not a 404.
 
 ### Discovery
 
-Bulk discovery from Data Management's Gone from RomM row is generation-gated: a platform with no known completed fetch
-produces no candidates at all, because absence from an incomplete fetch is not evidence of removal. Inline removal from
-an already-vanished version-picker row needs no generation — the row is already known vanished — but still takes the
-same fresh exact-id proof.
+Bulk discovery from Data Management's Gone from RomM row sends no request, and reads two kinds of local evidence. The
+first is generation-gated: a platform with no known completed fetch produces no candidates from its stamp, because
+absence from an incomplete fetch is not evidence of removal. The second is the library sync's own mark on a row, below,
+which reaches the rows no stamp can name. Inline removal from an already-vanished version-picker row needs no generation
+— the row is already known vanished — but still takes the same fresh exact-id proof.
 
 Discovery reads the platform's completion stamp whether or not its skip was revoked. The end-of-run stale removal
 unbinds the rows of a platform whose sync is turned off, all but those an enabled collection returned and those a
@@ -121,7 +122,39 @@ revoke it for every platform they touch; each keeps the stamp
 ([Backend Architecture](backend-architecture.md#libraryservice-decomposition-serviceslibrary), "Incremental skip"). The
 rows keep their fetch generation and the stamp still records the fetch that set it, so Gone from RomM keeps naming the
 rows that fetch did not return — including for as long as the platform's sync stays off, while no new complete fetch
-replaces the stamp. The canary ids a 404 round asks first are read the same way.
+replaces the stamp. The canary ids a 404 round asks first are read the same way, less the marked rows below.
+
+**The library sync marks what no stamp can name.** A platform reached only through RomM collections never gets a stamp,
+since only a platform unit writes one, and a platform whose stamp was cleared, by Force Full Sync or by an apply that
+did not finish, has none until it is synced whole again: while its sync is on, the next completed apply stamps it and
+the stamp names the rows its fetch did not return, but while its sync stays off that apply never comes, and only its
+collection-reached rows are asked about. A platform RomM no longer lists keeps its stamp, which still counts its rows as
+returned. So the apply's end-of-run stale removal records on a bound row it keeps what it established
+([Backend Architecture](backend-architecture.md#libraryservice-decomposition-serviceslibrary), "The stale removal keeps
+a game gone from RomM"): `roms.gone_from_romm` is `not_found` where RomM answered the exact id of a version reached
+through a collection with a proven 404, and `delisted` where the version was kept on a platform RomM no longer lists. A
+preview asks the same questions and writes none of the answers. Discovery adds every marked row to the candidates the
+stamps give (`domain/fetch_generation.py::gone_from_romm_ids`), and the Library page's `reachable_count` leaves out the
+same rows. The mark is discovery only, never deletion authority: the run proves every exact id again, with its liveness
+tiers, before anything is removed.
+
+**The cleanup's own run marks too.** It probes every version of each group it plans, candidates or not, so it can prove
+a version gone that no stamp and no sync named — an unbound sibling on a platform with no stamp, say. Where a version
+outside this run's candidates got a 404 that stands under the run's proof tiers (`still_there`, `canary_rom`,
+`canary_user`; an `unconfirmed_server` 404 never does) while the namespace held, the run marks it `not_found` and
+removes nothing it was not asked to remove; the next scan lists it. A row that already carries a mark keeps it, and a
+candidate gains none, since its stamp or its mark already lists it.
+
+The mark goes when RomM is seen serving the row again: a sync unit commits it (a commit writes the row as RomM delivered
+it, with no mark), or an apply's exact-id question gets the ROM back. It goes with the row when the cleanup removes it.
+And it goes when the cleanup's own exact-id check finds the ROM on RomM: the run's prober records every id any of its
+requests answered with that very ROM, a canary's included, and every 404 that stood, and the run writes both before its
+completion frame — the clears and the marks of the paragraph above, leaving as it was an id answered both ways — so the
+list reopened on that frame already shows the result. The prune conflicts already refuse a sync for the whole run, so
+nothing marks a row again in between. A version the cleanup keeps, such as the one a shortcut is on while another
+version is still on RomM, stays marked and stays listed. A marked row is never a canary: a platform RomM no longer lists
+keeps its stamp, so its rows still carry the generation the canary read looks for, and asking one would 404 and leave a
+fully gone game unprovable.
 
 The preview discloses **every** member of an affected group, not only the candidates. A member carrying the platform
 stamp's current fetch generation is not evidence that RomM still serves it: whole-game removal is decided by the run's

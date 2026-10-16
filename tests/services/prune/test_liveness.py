@@ -355,3 +355,112 @@ class TestUserFallbackTier:
 
         assert (await prober.probe_many({7}))[7]["status"] == "vanished"
         assert reader.user_calls == 0
+
+
+class TestLiveRomIds:
+    """What the run's present-clear reads: every id RomM answered with that very ROM (#2431)."""
+
+    async def test_collects_the_live_answers_of_every_round_and_its_controls(self):
+        answers = {1: {"id": 1}, 2: RommNotFoundError("gone"), 3: {"id": 4}, 99: {"id": 99}}
+        prober, _ = _prober(answers, controls=[99])
+        prober.bind_run("run", romm_namespace(_NAMESPACE_SETTINGS))
+
+        await prober.probe_many({1})
+        await prober.probe_many({2, 3})
+
+        assert prober.live_rom_ids() == frozenset({1, 99})
+
+    async def test_a_new_run_starts_with_none(self):
+        prober, _ = _prober({1: {"id": 1}})
+        prober.bind_run("run-1", romm_namespace(_NAMESPACE_SETTINGS))
+        await prober.probe_many({1})
+
+        prober.end_run()
+        assert prober.live_rom_ids() == frozenset()
+        prober.bind_run("run-2", romm_namespace(_NAMESPACE_SETTINGS))
+        assert prober.live_rom_ids() == frozenset()
+
+    async def test_a_live_answer_after_a_namespace_change_is_not_recorded(self):
+        """The run clears the marks of exactly these ids, so a ROM another server returned clears none."""
+        settings = dict(_NAMESPACE_SETTINGS)
+
+        class _SwitchingReader(_FakeRomReader):
+            def get_rom_once(self, rom_id: int) -> object:
+                settings["romm_url"] = "https://other.example"
+                return {"id": rom_id}
+
+        prober = LivenessProber(
+            config=LivenessProberConfig(
+                loop=asyncio.get_running_loop(),
+                logger=logging.getLogger("prune-liveness-test"),
+                romm_api=cast("Any", _SwitchingReader({})),
+                settings=settings,
+                canary_rom_ids=lambda _exclude, _limit: [],
+            )
+        )
+        prober.bind_run("run-1", romm_namespace(_NAMESPACE_SETTINGS))
+
+        assert (await prober.probe_many({7}))[7]["reason"] == "server_namespace_changed"
+        assert prober.live_rom_ids() == frozenset()
+
+
+class TestGoneRomIds:
+    """What the run marks outside its candidates: only a 404 that stood (#2431 D5)."""
+
+    async def test_a_404_a_control_vouched_for_is_recorded(self):
+        prober, _ = _prober({7: RommNotFoundError("gone"), 99: {"id": 99}}, controls=[99])
+        prober.bind_run("run", romm_namespace(_NAMESPACE_SETTINGS))
+
+        await prober.probe_many({7})
+
+        assert prober.gone_rom_ids() == frozenset({7})
+
+    async def test_an_unconfirmed_404_is_not_recorded(self):
+        answers = {7: RommNotFoundError("misrouted"), 99: RommNotFoundError("misrouted")}
+        prober, _ = _prober(answers, controls=[99])
+        prober.bind_run("run", romm_namespace(_NAMESPACE_SETTINGS))
+
+        assert (await prober.probe_many({7}))[7]["reason"] == UNCONFIRMED_REASON
+        assert prober.gone_rom_ids() == frozenset()
+
+    async def test_a_404_whose_round_ended_under_another_namespace_is_not_recorded(self):
+        """The control answered under the run's namespace; the server changed as the proof was logged."""
+        settings = dict(_NAMESPACE_SETTINGS)
+
+        class _SwitchOnTheProofLine(logging.Handler):
+            def emit(self, record: logging.LogRecord) -> None:
+                if "liveness proof: tier=" in record.getMessage():
+                    settings["romm_url"] = "https://other.example"
+
+        logger = logging.getLogger("prune-liveness-test.switch")
+        handler = _SwitchOnTheProofLine()
+        logger.addHandler(handler)
+        logger.setLevel(logging.INFO)
+        prober = LivenessProber(
+            config=LivenessProberConfig(
+                loop=asyncio.get_running_loop(),
+                logger=logger,
+                romm_api=cast("Any", _FakeRomReader({7: RommNotFoundError("gone"), 99: {"id": 99}})),
+                settings=settings,
+                canary_rom_ids=lambda _exclude, _limit: [99],
+            )
+        )
+        prober.bind_run("run", romm_namespace(_NAMESPACE_SETTINGS))
+        try:
+            verdicts = await prober.probe_many({7})
+        finally:
+            logger.removeHandler(handler)
+
+        assert verdicts[7]["status"] == "vanished"
+        assert prober.gone_rom_ids() == frozenset()
+
+    async def test_a_new_run_starts_with_none(self):
+        prober, _ = _prober({7: RommNotFoundError("gone"), 99: {"id": 99}}, controls=[99])
+        prober.bind_run("run-1", romm_namespace(_NAMESPACE_SETTINGS))
+        await prober.probe_many({7})
+
+        prober.bind_run("run-2", romm_namespace(_NAMESPACE_SETTINGS))
+        assert prober.gone_rom_ids() == frozenset()
+        await prober.probe_many({7})
+        prober.end_run()
+        assert prober.gone_rom_ids() == frozenset()

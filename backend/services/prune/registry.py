@@ -52,7 +52,8 @@ class PruneRegistry:
         cheapest available test of whether the ROM endpoint is still answering
         for ids that exist. Deterministic (ascending) so the audit trail names
         the same subject a re-run would pick, and capped by *limit* because this
-        is a control, not a survey.
+        is a control, not a survey. A row carrying a gone-from-RomM mark is never
+        one; why is docs/architecture/removed-game-cleanup.md, "Discovery".
         """
         with self._uow_factory() as uow:
             rows = list(uow.roms.iter_all())
@@ -60,7 +61,8 @@ class PruneRegistry:
             for slug in sorted({row.platform_slug for row in rows}):
                 platform_rows = [row for row in rows if row.platform_slug == slug]
                 served |= current_generation_ids(platform_rows, uow.platform_sync_state.get(slug))
-        return sorted(served - exclude)[:limit]
+        marked = {row.rom_id for row in rows if row.gone_from_romm is not None}
+        return sorted(served - marked - exclude)[:limit]
 
     def reread_group(self, rom_id: int) -> list[Rom]:
         with self._uow_factory() as uow:
@@ -104,6 +106,23 @@ class PruneRegistry:
             if bound is None:
                 return False
             return bound.rom_id == expected_bound_rom_id
+
+    def write_gone_marks(self, *, mark: frozenset[int], clear: frozenset[int]) -> None:
+        """Mark *mark* gone from RomM (``not_found``) where unmarked, and drop the mark from *clear*."""
+        if not mark and not clear:
+            return
+        with self._uow_factory() as uow:
+            for rom_id in sorted(mark | clear):
+                row = uow.roms.get(rom_id)
+                if row is None:
+                    continue
+                if rom_id in mark and row.gone_from_romm is None:
+                    row.mark_gone_from_romm("not_found")
+                elif rom_id in clear and row.gone_from_romm is not None:
+                    row.clear_gone_from_romm()
+                else:
+                    continue
+                uow.roms.save(row)
 
     def reconcile_removed_shortcut(self, expected_bound_rom_id: int, app_id: int) -> bool:
         """Persist Steam's confirmed shortcut absence without deleting source data."""
