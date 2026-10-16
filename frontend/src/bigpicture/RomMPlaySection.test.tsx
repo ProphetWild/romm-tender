@@ -5,7 +5,7 @@
 // catches (no state change, no log call) are exempt — and even then, prefer
 // dropping the test over keeping one with zero expects.
 //
-// The module-scope `artworkApplied` map in RomMPlaySection.tsx and the
+// The module-scope `artworkApplied` map in utils/autoArtwork.ts and the
 // per-appId entries in utils/gameDetailStore.ts both persist across tests
 // within this file. To avoid that state bleeding between tests we use a unique
 // `testAppId` per test (incremented in `beforeEach`) — Option A in the playbook.
@@ -79,13 +79,20 @@ vi.mock("../utils/scrollHelpers", () => ({ scrollToTop: vi.fn() }));
 vi.mock("../utils/events", () => ({
   getEventTarget: vi.fn((e: { target?: unknown } | null) => e?.target ?? null),
 }));
-vi.mock("../utils/formatters", () => ({
-  formatLastPlayed: vi.fn((rt: number) => (rt ? "2024-01-15" : "")),
-  formatPlaytime: vi.fn((m: number) => (m ? "1h 30m" : "")),
-  // Deterministic echo so the SPACE REQUIRED cell's rendered value is
-  // recognizable in assertions; null (unknown size) yields "" per the real impl.
-  formatBytes: vi.fn((b: number | null) => (b == null ? "" : `${b}bytes`)),
-}));
+vi.mock("../utils/formatters", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../utils/formatters")>();
+  return {
+    formatLastPlayed: vi.fn((rt: number) => (rt ? "2024-01-15" : "")),
+    formatPlaytime: vi.fn((m: number) => (m ? "1h 30m" : "")),
+    // Deterministic echo so the SPACE REQUIRED cell's rendered value is
+    // recognizable in assertions; null (unknown size) yields "" per the real impl.
+    formatBytes: vi.fn((b: number | null) => (b == null ? "" : `${b}bytes`)),
+    // The real preference rule, so the LAST PLAYED tests below run it rather
+    // than a copy. It formats through the real formatLastPlayed.
+    resolveLastPlayed: actual.resolveLastPlayed,
+  };
+});
+const realFormatters = await vi.importActual<typeof import("../utils/formatters")>("../utils/formatters");
 vi.mock("../utils/playSection", () => ({
   applySaveSyncDisplay: vi.fn(() => ({ status: null, label: "" })),
   // Must stay in sync with the beforeEach re-stub (resetAllMocks wipes this impl) —
@@ -2190,15 +2197,11 @@ describe("RomMPlaySection", () => {
   // ------------------------------------------------------------------
 
   describe("LAST PLAYED source (#1294)", () => {
-    // Echo the numeric timestamp so OUR (restored) date and Steam's device-local
-    // date render as distinguishable strings — the default formatLastPlayed mock
-    // collapses every non-zero value to a single "2024-01-15".
-    function applyEchoLastPlayedFormatter(): void {
-      vi.mocked(formatters.formatLastPlayed).mockImplementation((rt: number) => (rt ? `lp:${rt}` : ""));
-    }
+    // The real resolveLastPlayed formats through the real formatLastPlayed, so
+    // each value is told apart by what that formatter shows for it.
+    const shown = (secs: number): string => realFormatters.formatLastPlayed(secs);
 
     function mountReconciled(lastPlayed: string | null, steamRt: number) {
-      applyEchoLastPlayedFormatter();
       stubAppStore({ [testAppId]: { rt_last_time_played: steamRt, minutes_playtime_forever: 60 } });
       vi.mocked(cachedStore.getCachedGameDetail).mockResolvedValue({
         found: true,
@@ -2220,26 +2223,22 @@ describe("RomMPlaySection", () => {
       const ourSecs = Math.floor(Date.parse(iso) / 1000);
       const { container } = mountReconciled(iso, 1111111111);
       await flushAsync();
-      // Restored ISO routed through the SAME formatter (converted to seconds),
-      // and the Steam device-local value is NOT what's shown.
-      expect(vi.mocked(formatters.formatLastPlayed)).toHaveBeenCalledWith(ourSecs);
       expect(container.textContent).toContain("LAST PLAYED");
-      expect(container.textContent).toContain(`lp:${ourSecs}`);
-      expect(container.textContent).not.toContain("lp:1111111111");
+      expect(container.textContent).toContain(shown(ourSecs));
+      expect(container.textContent).not.toContain(shown(1111111111));
     });
 
     it("falls back to Steam's rt_last_time_played when last_played is null (no regression)", async () => {
       const { container } = mountReconciled(null, 1111111111);
       await flushAsync();
-      expect(container.textContent).toContain("lp:1111111111");
+      expect(container.textContent).toContain(shown(1111111111));
     });
 
     it("falls back safely to Steam's value when last_played is unparseable (no crash)", async () => {
       const { container } = mountReconciled("not-a-real-date", 1111111111);
       await flushAsync();
       // Unparseable restored value → Steam device-local value shown, no throw.
-      expect(container.textContent).toContain("lp:1111111111");
-      expect(container.textContent).not.toContain("lp:NaN");
+      expect(container.textContent).toContain(shown(1111111111));
     });
 
     it("keeps OUR restored last_played across a later romm_playtime_changed signal (onPlaytimeChanged branch)", async () => {
@@ -2248,21 +2247,20 @@ describe("RomMPlaySection", () => {
       const { container } = mountReconciled(iso, 1111111111);
       await flushAsync();
       // Restored value adopted on reconcile.
-      expect(container.textContent).toContain(`lp:${ourSecs}`);
+      expect(container.textContent).toContain(shown(ourSecs));
 
-      // A later playtime signal (session end / bulk write) raises Steam's
+      // A later playtime signal (session end / bulk write) changes Steam's
       // device-local rt to a DIFFERENT value and fires the chokepoint signal.
       // The reactive handler must keep the restored value — Steam's synthesized
       // rt must NOT win.
-      stubAppStore({ [testAppId]: { rt_last_time_played: 2222222222, minutes_playtime_forever: 120 } });
+      stubAppStore({ [testAppId]: { rt_last_time_played: 1222222222, minutes_playtime_forever: 120 } });
       act(() => {
         globalThis.dispatchEvent(new CustomEvent("romm_playtime_changed", { detail: { appId: testAppId } }));
       });
-      expect(container.textContent).toContain(`lp:${ourSecs}`);
-      expect(container.textContent).not.toContain("lp:2222222222");
+      expect(container.textContent).toContain(shown(ourSecs));
+      expect(container.textContent).not.toContain(shown(1222222222));
     });
   });
-
   // ------------------------------------------------------------------
   // F. romm_data_changed DOM event handler
   // ------------------------------------------------------------------
@@ -3480,7 +3478,16 @@ describe("RomMPlaySection", () => {
       expect(vi.mocked(toaster.toast)).toHaveBeenCalledWith(expect.objectContaining({ body: "Uninstall failed" }));
     });
 
-    it("throw caused by unmount → no toast, debug-logged instead (non-vacuous catch)", async () => {
+    interface Removal {
+      resolve: (result: backend.BackendResult) => void;
+      reject: (error: unknown) => void;
+    }
+
+    /**
+     * Press Uninstall, then leave the game page while the removal is in flight;
+     * the returned function answers the removal with *settle*.
+     */
+    async function uninstallThenLeave(): Promise<(settle: (removal: Removal) => void) => Promise<void>> {
       vi.mocked(cachedStore.getCachedGameDetail).mockResolvedValue({
         found: true,
         rom_id: 42,
@@ -3490,36 +3497,51 @@ describe("RomMPlaySection", () => {
       await flushAsync();
       const items = await openRomMMenuAndGetItems(testAppId);
 
-      let rejectRemove!: (error: unknown) => void;
-      vi.mocked(backend.removeRom).mockImplementation(
-        () =>
-          new Promise((_resolve, reject) => {
-            rejectRemove = reject;
-          }),
+      let removal!: Removal;
+      vi.mocked(backend.removeRom).mockReturnValue(
+        new Promise((resolve, reject) => {
+          removal = { resolve, reject };
+        }),
       );
       // The click's synchronous state update belongs inside act; the returned
-      // promise stays pending until rejectRemove below.
+      // promise stays pending until the removal is answered.
       let uninstall: unknown;
       await act(async () => {
         uninstall = items[items.length - 1]!.props.onClick?.();
       });
       await flushAsync();
 
-      // The user leaves the game page while the uninstall is still in flight.
       view.unmount();
       vi.mocked(toaster.toast).mockClear();
       vi.mocked(backend.debugLog).mockClear();
-      await act(async () => {
-        rejectRemove(new Error("teardown cancelled the endpoint call"));
-        await uninstall;
-        for (let i = 0; i < 6; i++) await Promise.resolve();
-      });
+      return async (settle) => {
+        await act(async () => {
+          settle(removal);
+          await uninstall;
+          for (let i = 0; i < 6; i++) await Promise.resolve();
+        });
+      };
+    }
 
-      // Post-catch state: no user-facing failure for work that already committed,
-      // and the cancellation is recorded on the debug channel instead.
+    it("a removal that lands after the page was left → no toast, debug-logged instead (non-vacuous catch)", async () => {
+      const answer = await uninstallThenLeave();
+
+      await answer((removal) => removal.resolve({ success: true, message: "", prune_lease_token: "uninstall-lease" }));
+
       expect(vi.mocked(toaster.toast)).not.toHaveBeenCalled();
       expect(vi.mocked(backend.debugLog)).toHaveBeenCalledWith(
         expect.stringContaining("handleUninstall: continuation was cancelled"),
+      );
+    });
+
+    it("a removal that fails after the page was left → toasts 'Uninstall failed'", async () => {
+      const answer = await uninstallThenLeave();
+
+      await answer((removal) => removal.reject(new Error("connection_lost")));
+
+      expect(vi.mocked(toaster.toast)).toHaveBeenCalledWith(expect.objectContaining({ body: "Uninstall failed" }));
+      expect(vi.mocked(backend.debugLog)).not.toHaveBeenCalledWith(
+        expect.stringContaining("continuation was cancelled"),
       );
     });
   });

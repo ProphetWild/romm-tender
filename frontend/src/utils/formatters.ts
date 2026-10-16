@@ -1,6 +1,10 @@
-/** Format a Unix timestamp (seconds) as a coarse human-readable date.
- *  Returns "Never" for zero/negative, "Today"/"Yesterday"/"Xd ago" for recent,
- *  and "DD. Mon." (or "DD. Mon. YYYY" if not the current year) for older. */
+const SHORT_DATE: Intl.DateTimeFormatOptions = { day: "numeric", month: "short" };
+
+/** Format a Unix timestamp (seconds) as a coarse last-played label: "Never" for
+ *  zero or negative; "Today" for today and for a time later than now (a clock
+ *  behind the one that recorded it); "Yesterday"; "N days ago" under a week;
+ *  otherwise the day and short month in the client's language, with the year
+ *  when it is not this year. */
 export function formatLastPlayed(timestamp: number): string {
   if (!timestamp || timestamp <= 0) return "Never";
   const date = new Date(timestamp * 1000);
@@ -8,16 +12,37 @@ export function formatLastPlayed(timestamp: number): string {
   const diffMs = now.getTime() - date.getTime();
   const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
 
-  if (diffDays === 0) return "Today";
+  if (diffDays <= 0) return "Today";
   if (diffDays === 1) return "Yesterday";
   if (diffDays < 7) return `${diffDays} days ago`;
 
-  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-  const day = date.getDate();
-  const month = months[date.getMonth()];
-  const year = date.getFullYear();
-  if (year === now.getFullYear()) return `${day}. ${month}.`;
-  return `${day}. ${month}. ${year}`;
+  if (date.getFullYear() === now.getFullYear()) return date.toLocaleDateString(undefined, SHORT_DATE);
+  return date.toLocaleDateString(undefined, { ...SHORT_DATE, year: "numeric" });
+}
+
+/** Resolve the LAST PLAYED display, preferring our restored cross-device
+ *  `last_played` (ISO-8601, from `reconcile_playtime` / native play sessions,
+ *  #1294) over Steam's device-local `rt_last_time_played`. Steam synthesizes the
+ *  latter to "now" after a device cutover, so the restored value wins whenever
+ *  it parses; a null or unparseable restored value falls back to Steam's
+ *  Unix-seconds value. Both route through `formatLastPlayed` so the rendered
+ *  format is identical either way. A restored value without an offset is a RomM
+ *  play-session `end_time`, which RomM sends in UTC, so it is read as UTC rather
+ *  than as local time; the end times Tender records carry their offset. */
+export function resolveLastPlayed(restoredIso: string | null, steamUnixSeconds: number): string {
+  if (restoredIso) {
+    const normalized =
+      restoredIso.endsWith("Z") || /[+-]\d{2}(?::?\d{2})?$/.test(restoredIso) ? restoredIso : `${restoredIso}Z`;
+    const ms = Date.parse(normalized);
+    if (!Number.isNaN(ms)) return formatLastPlayed(Math.floor(ms / 1000));
+  }
+  return formatLastPlayed(steamUnixSeconds);
+}
+
+/** Format a Unix timestamp (seconds) as a release date — day, short month and year in the client's language. */
+export function formatReleaseDate(timestamp: number | null): string | null {
+  if (!timestamp || timestamp <= 0) return null;
+  return new Date(timestamp * 1000).toLocaleDateString(undefined, { ...SHORT_DATE, year: "numeric" });
 }
 
 /** Format a byte count as a human-readable string (e.g. "12.4 KB", "1.23 GB"). Empty string for null. */
