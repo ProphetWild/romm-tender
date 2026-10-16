@@ -61,7 +61,7 @@ from domain.sync_stage import SyncStage
 from domain.sync_state import SyncCancelled
 from lib.background_tasks import BackgroundTasks
 from lib.errors import Refused, classify_error
-from services.library._stale_rows import settle_stale_rows
+from services.library._stale_rows import settle_stale_rows, with_kept_platform_names
 from services.library._state import CollectionMembership
 from services.library.session_budget import SYNC_PAUSED_BUDGET, SessionBudgetMonitor
 
@@ -129,27 +129,29 @@ class SyncOrchestratorConfig:
     ``shortcut_launch_resolver`` peer answers the two per-ROM questions each
     shortcut bake needs — the disc-resolved installed path and the active
     emulator — which preview and the per-unit apply both hand straight to
-    :func:`build_shortcuts_data`. The ``local_library_reader`` peer answers every
-    question the run asks of this device's own record of the library — the
-    classify baseline, the per-unit bound-row projection, the unstamped-platform
-    count, the resident sibling-group keys, and the stale-row scan — each in its
-    own short read Unit of Work, where the fetcher asks the same kinds of
-    question of RomM. The ``chunk_dispatcher`` peer takes the unit's built delta
-    the rest of the way: it emits each chunk to the frontend, waits out the
-    heartbeat clock for the ack, and commits the chunk through the reporter. The
-    ``session_budget`` seam owns every
-    renderer-heap reading and verdict, which the dispatcher asks at each chunk
-    boundary — whether applying the chunk would exhaust Steam's per-session heap
-    budget, and how much headroom is left for the chunk's additive cover work
-    (#1383); the terminal memory delta this module reports is drawn from the same
-    seam. The ``cover_preparer`` peer holds the apply path's covers, and the
-    reporter holds the same ``artwork`` seam for commit-time cover-path
-    finalisation — between them, no ``ArtworkManager`` is owed here. The
-    ``sync_run_recorder`` peer writes the run's ``SyncRun`` row: this module
-    decides which terminal status a stopped run earns, and hands that decision
-    over as a method call. The ``conflict_rules`` are what a ``sync_stale``
-    event that removes shortcuts takes its lease through. The ``artwork_job`` is
-    asked for a run at every run's end: it stops while a run is in flight.
+    :func:`build_shortcuts_data`. The ``local_library_reader`` peer answers
+    every question the orchestrator asks of this device's own record of the
+    library — the classify baseline, the per-unit bound-row projection, the
+    unstamped-platform count, the resident sibling-group keys, the members the
+    collections listed at their last completed apply, the cached names of the
+    preview's kept platforms, and the stale-row scan — each in its own short
+    read Unit of Work, where the fetcher asks the same kinds of question of
+    RomM. The ``chunk_dispatcher`` peer takes the unit's built delta the rest of
+    the way: it emits each chunk to the frontend, waits out the heartbeat clock
+    for the ack, and commits the chunk through the reporter. The
+    ``session_budget`` seam owns every renderer-heap reading and verdict, which
+    the dispatcher asks at each chunk boundary — whether applying the chunk
+    would exhaust Steam's per-session heap budget, and how much headroom is left
+    for the chunk's additive cover work (#1383); the terminal memory delta this
+    module reports is drawn from the same seam. The ``cover_preparer`` peer
+    holds the apply path's covers, and the reporter holds the same ``artwork``
+    seam for commit-time cover-path finalisation — between them, no
+    ``ArtworkManager`` is owed here. The ``sync_run_recorder`` peer writes the
+    run's ``SyncRun`` row: this module decides which terminal status a stopped
+    run earns, and hands that decision over as a method call. The
+    ``conflict_rules`` are what a ``sync_stale`` event that removes shortcuts
+    takes its lease through. The ``artwork_job`` is asked for a run at every
+    run's end: it stops while a run is in flight.
     """
 
     settings: dict[str, Any]
@@ -391,7 +393,13 @@ class SyncOrchestrator:
             )
             removed_ids = {row.rom_id for row in removals}
             stale = [rid for rid in stale if rid in removed_ids]
-            kept_names = await self._with_kept_platform_names(kept, slug_to_name)
+            kept_names = await with_kept_platform_names(
+                kept,
+                slug_to_name,
+                read_kept_names=lambda slugs: self._loop.run_in_executor(
+                    None, self._local_library_reader.do_read_kept_platform_names, slugs
+                ),
+            )
             kept_platform_names = {kept_names.get(row.platform_slug, row.platform_slug) for row in kept}
             disabled_count = count_disabled_platform_removals(stale, registry, platform_name_set)
             # Cover-only work (#1386): count the bound fetched ROMs whose server
@@ -1258,22 +1266,6 @@ class SyncOrchestrator:
                 virtual_type=unit.virtual_type,
             )
         return unit_roms, skipped
-
-    async def _with_kept_platform_names(self, kept: list[StaleRow], live: dict[str, str]) -> dict[str, str]:
-        """*live*, plus the cached name of each platform outside it that a *kept* row is on, for the preview.
-
-        Such a platform is one RomM no longer lists, and its Steam collection
-        keeps that name: the apply's finalize carries it forward
-        (``SyncReporter._names_with_bound_platforms_kept``), so the preview
-        counts the collection under the same name.
-        """
-        outside = {row.platform_slug for row in kept} - live.keys()
-        if not outside:
-            return live
-        kept_names = await self._loop.run_in_executor(
-            None, self._local_library_reader.do_read_kept_platform_names, outside
-        )
-        return {**kept_names, **live}
 
     async def _finalize_per_unit(
         self,
