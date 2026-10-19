@@ -17,28 +17,28 @@ without restating it. The width mechanism's decision record is
 
 ## Where the code lives
 
-| Module                                                                               | Responsibility                                                                                                                                                      |
-| ------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `frontend/src/qam/`                                                                  | The entry itself: the patch that puts it in the strip, the tab glyph, and the boundary the panel renders inside                                                     |
-| `frontend/src/index.tsx` (`QAMPanel`)                                                | The router: one `Page` value, one mounted page, a module-level `currentPage` that survives a QAM remount                                                            |
-| `frontend/src/types/navigation.ts`                                                   | The `Page` union — every page the router can land on                                                                                                                |
-| `frontend/src/bigpicture/MainPage.tsx`                                               | Main                                                                                                                                                                |
-| `frontend/src/bigpicture/SyncPage.tsx`, `frontend/src/bigpicture/sync/`              | Sync — the frame and its three left-column bodies, plus `useSyncPage` (its reads and actions) and the numeric-column split both its tables take                     |
-| `frontend/src/bigpicture/LibraryPage.tsx`, `frontend/src/bigpicture/library/`        | Library — the frame, and in `library/` both tabs and their state (its own row, further down)                                                                        |
-| `frontend/src/bigpicture/SettingsPage.tsx`, `frontend/src/bigpicture/settings/`      | Settings and its sections                                                                                                                                           |
-| `frontend/src/bigpicture/DataManagementPage.tsx`, `data/`, `RemovedGamesCleanup.tsx` | Data Management — the inventory rows, their panes and the page's state                                                                                              |
-| `frontend/src/bigpicture/DownloadQueue.tsx`                                          | Downloads                                                                                                                                                           |
-| `frontend/src/bigpicture/library/`                                                   | The Library tabs: `usePlatformsPage`, `PlatformsTab`, `PlatformDetail`; `useCollectionsPage`, `collectionKinds`, `CollectionsTab`, `CollectionsDetail`              |
-| `frontend/src/utils/deckyUiInternals.ts`                                             | Honest typing for `@decky/ui` values that come from a webpack probe: the frame's class names, `Tabs`, `ScrollPanel`, the controller glyph                           |
-| `frontend/src/utils/qamExpansion.ts`                                                 | The panel's width: the expand and hide messages, the injected `max-width` rule, and the four paths that clear both                                                  |
-| `frontend/src/bigpicture/layout/`                                                    | The wide-page frame: `WidePage` (the Back/title line, tabs, measured height, entry focus on a swap), `ScrollRegion`, `Columns`, `ListDetail`, `pane`                |
-| `frontend/src/utils/entryFocus.ts`                                                   | Which stop a body opens on, a page's declaration when that stop is not it, the rule for a body that swaps under the reader, and the `.focus()` + `gpfocus` pair     |
-| `frontend/src/utils/syncRunView.ts`                                                  | `useSyncRunView` — the run in flight as a page renders it: stage label, coarse bar, position within the running unit, fine-detail line, estimate, and the run's end |
-| `frontend/src/utils/runUnitsStore.ts`                                                | The run's work queue, one row per unit: the plan's riders, how far the run has got, and what each unit's apply produced                                             |
-| `frontend/src/utils/previewState.ts`                                                 | What a page asks of a pending preview: has it anything to apply, and how long is it still accepted (the half Main reads)                                            |
-| `frontend/src/utils/syncResume.ts`                                                   | Whether the next sync continues a run or starts one over, and what that puts on the Sync page's start button — the name the session-budget card quotes              |
-| `frontend/src/utils/syncProgress.ts`                                                 | The frame every page reads a run from, and the one rule it enforces on its writers: a run that has ended stays ended                                                |
-| `frontend/src/utils/` module stores                                                  | State that must outlive a page: sync progress, pending preview, downloads, prune, the game-detail caches                                                            |
+| Module                                                                                                                    | Responsibility                                                                                                                                                      |
+| ------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `frontend/src/qam/`                                                                                                       | The entry itself: the patch that puts it in the strip, the tab glyph, and the boundary the panel renders inside                                                     |
+| `frontend/src/index.tsx` (`QAMPanel`)                                                                                     | The router: one `Page` value, one mounted page, a module-level `currentPage` that survives a QAM remount                                                            |
+| `frontend/src/types/navigation.ts`                                                                                        | The `Page` union — every page the router can land on                                                                                                                |
+| `frontend/src/bigpicture/MainPage.tsx`                                                                                    | Main                                                                                                                                                                |
+| `frontend/src/bigpicture/SyncPage.tsx`, `frontend/src/bigpicture/sync/`                                                   | Sync — the frame and its three left-column bodies, plus `useSyncPage` (its reads and actions) and the numeric-column split both its tables take                     |
+| `frontend/src/bigpicture/LibraryPage.tsx`, `frontend/src/bigpicture/library/`                                             | Library — the frame, and in `library/` both tabs and their state (its own row, further down)                                                                        |
+| `frontend/src/bigpicture/SettingsPage.tsx`, `frontend/src/bigpicture/settings/`                                           | Settings and its sections                                                                                                                                           |
+| `frontend/src/bigpicture/DataManagementPage.tsx`, `data/`, `RemovedGamesCleanup.tsx`, `CleanupList.tsx`, `cleanupPlan.ts` | Data Management — the inventory rows, their panes and the page's state; the cleanup dialog, its list and the prediction of what a run would do                      |
+| `frontend/src/bigpicture/DownloadQueue.tsx`                                                                               | Downloads                                                                                                                                                           |
+| `frontend/src/bigpicture/library/`                                                                                        | The Library tabs: `usePlatformsPage`, `PlatformsTab`, `PlatformDetail`; `useCollectionsPage`, `collectionKinds`, `CollectionsTab`, `CollectionsDetail`              |
+| `frontend/src/utils/deckyUiInternals.ts`                                                                                  | Honest typing for `@decky/ui` values that come from a webpack probe: the frame's class names, `Tabs`, `ScrollPanel`, the controller glyph                           |
+| `frontend/src/utils/qamExpansion.ts`                                                                                      | The panel's width: the expand and hide messages, the injected `max-width` rule, and the four paths that clear both                                                  |
+| `frontend/src/bigpicture/layout/`                                                                                         | The wide-page frame: `WidePage` (the Back/title line, tabs, measured height, entry focus on a swap), `ScrollRegion`, `Columns`, `ListDetail`, `pane`                |
+| `frontend/src/utils/entryFocus.ts`                                                                                        | Which stop a body opens on, a page's declaration when that stop is not it, the rule for a body that swaps under the reader, and the `.focus()` + `gpfocus` pair     |
+| `frontend/src/utils/syncRunView.ts`                                                                                       | `useSyncRunView` — the run in flight as a page renders it: stage label, coarse bar, position within the running unit, fine-detail line, estimate, and the run's end |
+| `frontend/src/utils/runUnitsStore.ts`                                                                                     | The run's work queue, one row per unit: the plan's riders, how far the run has got, and what each unit's apply produced                                             |
+| `frontend/src/utils/previewState.ts`                                                                                      | What a page asks of a pending preview: has it anything to apply, and how long is it still accepted (the half Main reads)                                            |
+| `frontend/src/utils/syncResume.ts`                                                                                        | Whether the next sync continues a run or starts one over, and what that puts on the Sync page's start button — the name the session-budget card quotes              |
+| `frontend/src/utils/syncProgress.ts`                                                                                      | The frame every page reads a run from, and the one rule it enforces on its writers: a run that has ended stays ended                                                |
+| `frontend/src/utils/` module stores                                                                                       | State that must outlive a page: sync progress, pending preview, downloads, prune, the game-detail caches                                                            |
 
 ## The entry
 
@@ -749,7 +749,9 @@ holding a button must not hide the overflow its focus ring is drawn in.
 spills across the track beside it — on the Deck a platform name and its note ran into the New column's digit. The clip
 (`overflow: hidden`, `text-overflow: ellipsis`, `white-space: nowrap`, `min-width: 0`) belongs on the **cell**, because
 a grid item is blockified and those properties apply to it, where an inline `span` nested inside it is not and the same
-three do nothing at all. What the clip takes away is handed back in a `title`, note included.
+three do nothing at all. What the clip takes away is handed back in a `title`, note included. The removed-games review's
+list wraps its names instead, because what it says matters before anything is removed and a controller shows no tooltip
+([Data Management](#data-management), "The removed-games review").
 
 ### Destructive actions
 
@@ -2263,7 +2265,7 @@ reason Settings needs none: six rows that each name a thing are their own order.
 | Installed ROMs        | one count per install — two kept versions count twice           | Uninstall all ROM files                         |
 | Grid images           | `scan` until asked — then how many are orphaned                 | Remove the orphaned images                      |
 | Other non-Steam games | Steam's own store less Tender's entries                         | the whitelist, the removal, the RetroDECK guard |
-| Gone from RomM        | `scan` until asked — the server round trip                      | Review, which opens the dialog below            |
+| Gone from RomM        | `scan` until asked — a local scan, no request to RomM           | Review, which opens the dialog below            |
 | Recovery bundles      | how many are sealed and what they take                          | the bundles one by one, and nothing to press    |
 
 **Every figure is reading, failed or answered, and its row's count slot shows which**: a spinner while it is being read,
@@ -2273,21 +2275,23 @@ not asked, shown as `scan`. A pane never borrows one state's words for another: 
 could not be read and how to try again — reopening the page for a figure read on arrival, pressing the scan button again
 for a scan.
 
-**A number that costs a round trip or a backend scan sits behind a press.** Focus selects on this layout, so a reading
-that rode on the selection would fire under every row the stick passes — a local scan of the grid directory for one row,
-a RomM round trip for the other. Grid images and Gone from RomM therefore read `scan` until they are asked, and keep the
-answer until something makes it wrong, because a stale number is worse than no number. A finished cleanup puts Gone from
-RomM back to `scan`. Grid images goes back to `scan` after any removal of shortcuts from this page — Tender's shortcuts
-once the backend has accepted, other non-Steam games, and a finished Gone from RomM cleanup — because each can leave
-images the scan did not count: a shortcut Tender created but had no record of, or one whose removal report did not
-complete (that report is what deletes a bound shortcut's images), a foreign entry whose art nothing here deletes, or a
-cleanup run without recovery, which leaves its shortcuts' images in place. A grid-image removal re-derives its
-candidates rather than taking the scan's, and answers how many it found beside how many it removed; the row reads `0`
-only when the two match, since then nothing orphaned at the moment of the removal is left. Fewer removed than found
-means files that would not delete, and the row goes back to `scan` with the pane's status line saying how many; so does
-an answer missing either count or removing more than it found, or no answer at all. A refused removal deleted nothing,
-so the scanned count stands. The grid removal holds the page's busy state like the other removals, so no removal button
-— its own included — can start another while it runs.
+**A number that costs a backend scan sits behind a press.** Focus selects on this layout, so a reading that rode on the
+selection would fire under every row the stick passes — a scan of the grid directory for one row, and for the other a
+scan of the library's records, each row against its platform's completion stamp and its gone-from-RomM mark, and of the
+downloaded files' sizes, which sends no request to RomM ([Removed-game cleanup](removed-game-cleanup.md#discovery)).
+Grid images and Gone from RomM therefore read `scan` until they are asked, and keep the answer until something makes it
+wrong, because a stale number is worse than no number. A finished cleanup puts Gone from RomM back to `scan`. Grid
+images goes back to `scan` after any removal of shortcuts from this page — Tender's shortcuts once the backend has
+accepted, other non-Steam games, and a finished Gone from RomM cleanup — because each can leave images the scan did not
+count: a shortcut Tender created but had no record of, or one whose removal report did not complete (that report is what
+deletes a bound shortcut's images), a foreign entry whose art nothing here deletes, or a cleanup run without recovery,
+which leaves its shortcuts' images in place. A grid-image removal re-derives its candidates rather than taking the
+scan's, and answers how many it found beside how many it removed; the row reads `0` only when the two match, since then
+nothing orphaned at the moment of the removal is left. Fewer removed than found means files that would not delete, and
+the row goes back to `scan` with the pane's status line saying how many; so does an answer missing either count or
+removing more than it found, or no answer at all. A refused removal deleted nothing, so the scanned count stands. The
+grid removal holds the page's busy state like the other removals, so no removal button — its own included — can start
+another while it runs.
 
 **The whitelist's search sits inline, above the list it filters**, which the pane expands under **Configure whitelist**
 — the search kind of text input, not the value kind that opens a modal ([Text input](#text-input)).
@@ -2323,35 +2327,59 @@ margin is wide enough that the derivation would have to be badly wrong to change
 pane would shrink it in both axes. Its rules do not change; they live in
 [removed-game-cleanup.md](removed-game-cleanup.md).
 
-**The dialog reads top to bottom as the options, the run's bar, then the candidates.** The four options stand in two
-columns under the intro, each a short label with its full meaning in the line under it, and the acknowledgement a run
-without a recovery bundle asks for appears under the bundle's own toggle. The bar holds the recovery estimate against
-the free space at the target, **Refresh free space**, **Retry loading** once a page has failed to load, **Cancel** and
-**Confirm Cleanup**, the reason that page failed, and while a run is going its progress and **Stop Cleanup**, then its
-result and the details region, and the line saying why Confirm would refuse a press. **The bar sits above the table, not
-pinned under it** as the layout study drew it: focus follows element order rather than the picture, so a bar after the
-rows is one press per row away however it is drawn — the Sync page keeps its buttons above its tables for the same
+**The dialog reads top to bottom as the summary, the options, the run's bar, then the list.** The summary says what a
+cleanup would do — _RomM no longer has N versions this device still holds. Each one is checked against RomM again before
+anything is removed. If you clean up now:_ and the counts of versions removed, games removed with their shortcut,
+downloaded files deleted with no copy, and versions kept because a shortcut is on them, each left out where it is zero;
+with no version removed it reads _If you clean up now: nothing is removed._ beside the kept count, and Confirm is
+disabled. N is the preview's `candidate_total`, the versions it offers for removal, in the trash icon's dialog too. The
+four options stand in one column, each a short label with its meaning in the line under it: **Remove gone versions**,
+**Remove games that are gone entirely**, **Back up before removing** with the acknowledgement a run without a recovery
+bundle asks for under it, and **Back up downloaded game files too**, which switches every row's backup at once and
+carries the space line — _Selected: X of Y · Z free_, X the files whose backup is on, Y every file the run would delete
+— with the lower-bound note, any refusal for space and **Refresh free space** under it. Where the run would delete no
+downloaded file, and every page has arrived, that option is disabled and its line says there is nothing to back up. The
+bar holds **Retry loading** once a page has failed to load, **Cancel** and Confirm, which names its count (**Remove 3
+versions**), red and last; the reason that page failed, and while a run is going its progress and **Stop Cleanup**, then
+its result and the details region, and the line saying why Confirm would refuse a press. **The bar sits above the list,
+not pinned under it** as the layout study drew it: focus follows element order rather than the picture, so a bar after
+the rows is one press per row away however it is drawn — the Sync page keeps its buttons above its tables for the same
 reason. Retry loading is in the bar for that reason too: every row is a stop, and Confirm refuses until every page is
-loaded, so after the table it would be a table's length from the press it unblocks; the rows it adds land below it. The
-candidates are a table (Game, Platform, Verdict, Installed, Keep a copy). **A verdict says what is known now and never
-the run's outcome** — _Gone from RomM_ for a candidate, _Still on RomM_ for a version listed only because a whole-game
-removal could take it, each with _one of 4_ where the game has more than one version. A version still on RomM is removed
-too if the run's check finds every version of its game gone, so neither a verdict nor the section's heading (_Other
-versions of these games — still on RomM_) says _kept_: either would promise more than the preview knows, and a heading
-is read before the line that qualifies it. The full sentence behind a verdict is the cell's title, which is a mouse's
-way to it only: a tooltip is a hover the controller cannot perform, so on the controller the intro and the other
-versions' section line say the same. For the same reason **what tells two versions apart is on screen**: under each row
-a line names the version — its ROM id, and its file name where that says more than the game's name — because two gone
-versions of one game otherwise draw as identical rows, each with a toggle of its own. The other versions are a section
-of the same table under a heading whose line states the sentence for all of them. **Keep a copy** is the per-row toggle
-that puts a version's installed ROM content in the recovery bundle: an installed row carries it and it is that row's
-focus stop, since a second stop on the row would be a dead step in front of it; a row with nothing installed carries a
-dash and is a stop itself, so the table can be walked. A row's warnings — the preview's own warning and the ROM file
-that goes without a backup — are lines under it, inside the row. **The dialog is revealed at both edges**: focus
-reaching the first option scrolls it to its top, so the intro comes back, and focus reaching the last row scrolls it to
-its end, so that row's own lines and the note after the table are not left under the view. Steam scrolls only far enough
-to reveal the focused control, which is why both are needed. The suite pins that each scroll is asked for; whether it
-lands where it should is device-only.
+loaded, so after the list it would be a list's length from the press it unblocks; the rows it adds land below it.
+
+**The list is grouped by game and says what a run would do, not only where a version is.** It is a table (Game and
+versions, What happens, Downloaded, Back up file) with a line under it saying that Downloaded is the game files of that
+version on this device and a file is deleted only where the row says so. Each game is a row of its own, a focus stop,
+with its name, its platform, how many of its versions are gone and its outcome. The name is that of the version a Steam
+shortcut is on, the name the game has in Steam; with no shortcut, that of the group's default version in RomM as the
+last library sync stored it (`is_main_sibling`); otherwise the first version's. The outcome is _Game stays_, _Nothing
+removed_, _Game removed, with its shortcut_, or _Game removed_ for a game without a shortcut. Its versions follow — the
+gone ones, then the one a shortcut is on, then the others on RomM — each with its file name, where it is (_Gone from
+RomM_, _On RomM_, _your shortcut_ on the version a shortcut is on) and its outcome: _Removed_, _Removed, file deleted_,
+_Kept_ with its reason, or _Stays_ for a version on RomM. An outcome is red where something is lost or leaves Steam,
+light where only Tender's own record of a version goes, blue where it is kept, and green where it stays. The outcomes
+follow the options. They are predicted in the panel (`bigpicture/cleanupPlan.ts`) from the preview's per-row fields —
+`gone_from_romm`, `bound`, `candidate` and `fs_name_no_ext` — and the run's own check still decides; the run never
+removes more than the prediction ([Removed-game cleanup](removed-game-cleanup.md#discovery)). Where two reasons keep a
+version, the shortcut's wins, also over the trash icon's _Only the version you chose is removed here._, since nothing
+else in the dialog would remove it. A gone version beside a version on RomM with the same file name less its extension
+is an old entry RomM replaced in a rescan, and says so where the others say where they are. More than two other versions
+on RomM fold into one row, _N more versions, all on RomM · Show_, a button that opens them in place; the version a
+shortcut is on is never folded. Every row stays listed with either option off. **Nothing in the list is cut short**: a
+game's name and outcome and a version's name and where it is wrap onto a further line where they do not fit. Game and
+versions takes three fifths of the width the two text columns share, and What happens sets its outcomes and reasons a
+size smaller, so the names have the room. A game's name is bold and one step above its versions' names, which take the
+version rows' smaller size. **The Back up file switch appears only on a row whose downloaded file the run would
+delete**, under the column's header **Back up file** and with no label of its own, and is that row's focus stop, since a
+second stop on the row would be a dead step in front of it. It is Steam's bare switch (`Toggle`), right-aligned in its
+column, and the row shows that the switch holds focus, as Library › Collections' rows do; every other version row is a
+stop itself, so the list can be walked. With **Back up before removing** off the switches are off and disabled. A switch
+the reader turned on stays on while an option takes its row out of the run, but only a file the run deletes is counted
+or staged. A row's warning — the preview's own — is a line under it, inside the row. **The dialog is revealed at both
+edges**: focus reaching the first option scrolls it to its top, so the summary comes back, and focus reaching the last
+row scrolls it to its end, so that row's own lines and the note after the list are not left under the view. Steam
+scrolls only far enough to reveal the focused control, which is why both are needed. The suite pins that each scroll is
+asked for; whether it lands where it should is device-only.
 
 **Recovery bundles are listed and nothing here removes them.** The row states how many are sealed and what they cost, so
 the disk they take stops being invisible, and the pane lists them under that total as a table — Game, Sealed, Size —

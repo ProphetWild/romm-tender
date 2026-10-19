@@ -548,7 +548,7 @@ async def test_stale_preview_refuses_start_after_local_change(harness):
 @pytest.mark.parametrize(
     "outcome,reason",
     [
-        ({"id": 1}, "options_excluded"),
+        ({"id": 1}, "version_back_on_romm"),
         ({"id": 99}, "liveness_uncertain"),
         ({}, "liveness_uncertain"),
         (RommConnectionError("offline"), "liveness_uncertain"),
@@ -2524,7 +2524,7 @@ async def test_unbound_group_plans_no_steam_action_and_takes_no_steam_path(harne
     with a live sibling nor the whole-game branch (every member vanished) may
     raise a shortcut action.
     """
-    _seed(harness.uow, _rom(1, fetch="old", group="g"), _rom(2, fetch="new", group="g"))
+    _seed(harness.uow, _rom(1, fetch="old", group="g"), _rom(2, fetch="old" if fully_dead else "new", group="g"))
     harness.romm.outcomes[1] = [RommNotFoundError("gone")] * 3
     harness.romm.outcomes[2] = [RommNotFoundError("gone")] * 3 if fully_dead else [{"id": 2}] * 3
     preview = await _preview(harness)
@@ -2536,6 +2536,77 @@ async def test_unbound_group_plans_no_steam_action_and_takes_no_steam_path(harne
     assert [name for name, _ in harness.events.events if name == "prune_action_required"] == []
     assert harness.uow.roms.get(1) is None
     assert (harness.uow.roms.get(2) is None) is fully_dead
+
+
+@pytest.mark.asyncio
+async def test_a_game_found_gone_whole_with_a_version_the_preview_did_not_offer_is_left_as_it_is(harness):
+    """A run never removes a version the dialog did not offer for removal; it marks it so the next scan lists it."""
+    _seed(harness.uow, _rom(1, fetch="old", group="g"), _rom(2, fetch="new", group="g"))
+    harness.romm.outcomes[1] = [RommNotFoundError("gone")] * 3
+    harness.romm.outcomes[2] = [RommNotFoundError("gone")] * 3
+    preview = await _preview(harness)
+    assert preview["candidate_total"] == 1
+    await _start(harness, preview["preview_id"], remove_fully_vanished=True)
+
+    complete = await _finish(harness)
+
+    assert complete["removed_rom_ids"] == []
+    assert (complete["results"][0]["status"], complete["results"][0]["reason"], complete["results"][0]["message"]) == (
+        "skipped",
+        "another_version_gone",
+        "Another version of this game is gone from RomM too. Scan again to review it.",
+    )
+    assert harness.uow.roms.get(1) is not None
+    unlisted = harness.uow.roms.get(2)
+    assert unlisted is not None
+    assert unlisted.gone_from_romm == "not_found"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "fetches,answers,scope,reason,marks",
+    [
+        pytest.param(
+            ("new", "new"),
+            ([RommNotFoundError("gone")] * 3, [RommNotFoundError("gone")] * 3),
+            "rom",
+            "another_version_gone",
+            {1: "not_found", 2: "not_found"},
+            id="trash-icon-another-version-gone",
+        ),
+        pytest.param(
+            ("new", "old"),
+            ([RommNotFoundError("gone")] * 3, [{"id": 2}] * 3),
+            "rom",
+            "version_back_on_romm",
+            {1: "not_found", 2: None},
+            id="trash-icon-version-back-on-romm",
+        ),
+        pytest.param(
+            ("old", "old"),
+            ([RommNotFoundError("gone")] * 3, [{"id": 2}] * 3),
+            "bulk",
+            "version_back_on_romm",
+            {1: "not_found", 2: None},
+            id="bulk-version-back-on-romm",
+        ),
+    ],
+)
+async def test_a_skipped_game_leaves_every_version_the_check_found_gone_marked(
+    harness, fetches, answers, scope, reason, marks
+):
+    """The next scan lists every gone version at once, the trash icon's own included, which has no stamp behind it."""
+    _seed(harness.uow, _rom(1, fetch=fetches[0], group="g"), _rom(2, fetch=fetches[1], group="g"), stamp_count=2)
+    harness.romm.outcomes[1], harness.romm.outcomes[2] = answers
+    preview = await _preview(harness, scope=scope, rom_id=1 if scope == "rom" else None)
+    await _start(harness, preview["preview_id"], remove_fully_vanished=True)
+
+    complete = await _finish(harness)
+
+    assert complete["removed_rom_ids"] == []
+    assert complete["results"][0]["reason"] == reason
+    rows = {rom_id: harness.uow.roms.get(rom_id) for rom_id in marks}
+    assert {rom_id: row.gone_from_romm if row is not None else "missing" for rom_id, row in rows.items()} == marks
 
 
 @pytest.mark.asyncio

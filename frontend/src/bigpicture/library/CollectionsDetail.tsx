@@ -5,7 +5,7 @@
  * Structure and vocabulary: `docs/architecture/qam-panel.md`, section Library.
  */
 
-import { useRef, useState, type CSSProperties, type FC } from "react";
+import { useRef, type CSSProperties, type FC } from "react";
 import { ConfirmModal, DialogButton, TextField, ToggleField, showModal, type FieldProps } from "@decky/ui";
 import { LoadingRow } from "../LoadingRow";
 import {
@@ -17,9 +17,9 @@ import {
   PANE_GUTTER,
   PaneTableHeader,
   PaneTableRow,
-  FOCUSED_ROW_FILL,
-  ROW_MARKER_WIDTH,
-  SELECTION_ACCENT,
+  FOCUSED_ROW,
+  UNFOCUSED_ROW,
+  useFocusWithin,
   SECONDARY_FONT,
 } from "../layout/pane";
 import { ENTRY_FOCUS_DELAY_MS, placeEntryFocus } from "../../utils/entryFocus";
@@ -50,15 +50,6 @@ const OWNED_COLUMNS = "minmax(0, 1fr) 72px 40px 52px 56px";
 const OWNERLESS_COLUMNS = "minmax(0, 1fr) 40px 52px 56px";
 
 const NUMBER: CSSProperties = { textAlign: "right" };
-
-// A marker as wide as a list row's, drawn as an inset shadow so it takes no
-// width from the row's first cell. The unfocused row keeps an empty fill so the
-// two states differ only in paint, never in layout.
-const FOCUSED_ROW: CSSProperties = {
-  background: FOCUSED_ROW_FILL,
-  boxShadow: `inset ${ROW_MARKER_WIDTH}px 0 0 ${SELECTION_ACCENT}`,
-};
-const UNFOCUSED_ROW: CSSProperties = { background: "transparent", boxShadow: "none" };
 
 /**
  * The Sync cell's toggle without the row padding and the focus fill its Field
@@ -162,19 +153,10 @@ const CollectionRow: FC<{ collection: CollectionSyncSetting; owned: boolean; sta
 }) => {
   const number = { ...NUMBER, fontSize: SECONDARY_FONT };
   // The whole row shows that its toggle holds focus, as the layout study draws
-  // it: a fill across the row and a marker on its left edge. React delivers
-  // these through focusin/focusout, so they follow focus landing on the toggle
-  // inside the row.
-  const [focused, setFocused] = useState(false);
+  // it: a fill across the row and a marker on its left edge.
+  const { focused, handlers } = useFocusWithin();
   return (
-    <div
-      onFocus={() => setFocused(true)}
-      onBlur={(e) => {
-        // Focus moving between controls inside the row keeps it focused.
-        // `contains` is asked of the row's own node, so no global is involved.
-        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setFocused(false);
-      }}
-    >
+    <div {...handlers}>
       <PaneTableRow
         columns={owned ? OWNED_COLUMNS : OWNERLESS_COLUMNS}
         register={COMPACT_TABLE_REGISTER}

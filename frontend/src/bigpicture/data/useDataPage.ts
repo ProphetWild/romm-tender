@@ -9,7 +9,8 @@
  * Which figures are fetched and which are waited for is the page's rule rather
  * than a pane's: the inventory read and the shortcut count are asked once when
  * the page opens, the non-Steam scan is Steam's own store and costs nothing, and
- * the two that cost a round trip read `scan` until the reader presses for them.
+ * the two that cost a backend scan, which sends no request to RomM, read `scan`
+ * until the reader presses for them.
  *
  * Structure and vocabulary: `docs/architecture/qam-panel.md`, section Data
  * Management.
@@ -131,11 +132,11 @@ const READING = { state: "reading" } as const;
 const FAILED = { state: "failed" } as const;
 
 /**
- * A population figure that costs a round trip: not asked until the reader
- * presses for it, then read like any other figure.
+ * A population figure that costs a scan on the device: not asked until the
+ * reader presses for it, then read like any other figure.
  *
- * Focus selects on this layout, so a figure fetched on selection would put a
- * round trip under every row the stick passes.
+ * Focus selects on this layout, so a figure read on selection would run a scan
+ * under every row the stick passes.
  */
 export type ScannedCount = { state: "not-asked" } | PageRead<number>;
 

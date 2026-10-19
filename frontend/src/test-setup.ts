@@ -331,6 +331,19 @@ vi.mock("@decky/ui", () => {
         onChange: (e: unknown) => p.onChange?.(e),
         onKeyDown: (e: unknown) => p.onKeyDown?.(e),
       }),
+    // The bare switch, without the Field a ToggleField draws around it.
+    // `data-bare` is what tells a test the two apart.
+    Toggle: (p: AnyProps & { value?: boolean; disabled?: boolean; onChange?: (v: boolean) => void }) =>
+      createElement(
+        "div",
+        { "data-testid": "toggle", "data-bare": "true", "data-disabled": p.disabled ? "true" : undefined },
+        createElement("input", {
+          type: "checkbox",
+          "data-testid": "toggle-input",
+          checked: p.value ?? false,
+          onChange: (e: { target: { checked: boolean } }) => p.onChange?.(e.target.checked),
+        }),
+      ),
     // `disabled` rides the wrapper as an attribute rather than the checkbox's own
     // `disabled`, so what a test can SEE of a greyed toggle is added without
     // changing what a test that clicks one gets. `highlightOnFocus={false}` and

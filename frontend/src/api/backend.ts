@@ -932,11 +932,23 @@ export interface PrunePreviewItem {
   rom_id: number;
   name: string;
   fs_name: string;
+  /** The file name without its extension: the stem the sync rebinds onto the same dump by. */
+  fs_name_no_ext: string;
   platform_slug: string;
   group_id: string;
   group_size: number;
   bound_count: number;
+  /** A Steam shortcut is on this version. */
+  bound: boolean;
+  /** The group's default version in RomM, as the last library sync stored it. */
+  is_main_sibling: boolean;
   candidate: boolean;
+  /**
+   * Gone from RomM by the Gone from RomM list's local rule, never asked of RomM;
+   * the version the trash icon was opened on always counts as gone
+   * (docs/architecture/removed-game-cleanup.md, "Discovery").
+   */
+  gone_from_romm: boolean;
   installed: boolean;
   installed_bytes: number | null;
   warning: string | null;
@@ -951,9 +963,9 @@ export interface PrunePreviewResult {
   items?: PrunePreviewItem[];
   offset?: number;
   limit?: number;
-  /** Every disclosed row: the candidates plus the siblings a whole-game removal could still take. */
+  /** Every listed row: the candidates and the other versions of their games. */
   total?: number;
-  /** Only the rows this run can remove on its own — the count the dialog leads with. */
+  /** Only the rows offered for removal — the count the dialog leads with. */
   candidate_total?: number;
   free_bytes?: number;
   recovery_root?: string | null;
