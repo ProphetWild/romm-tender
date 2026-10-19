@@ -6,7 +6,8 @@ import * as rommAppIds from "./rommAppIds";
 import * as launchGate from "./launchGate";
 import * as sessionManager from "./sessionManager";
 import * as steamShortcuts from "./steamShortcuts";
-import { FIRST_CONTACT_DEADLINE_MS, registerLaunchInterceptor, type LaunchPrompts } from "./launchInterceptor";
+import { FIRST_CONTACT_DEADLINE_MS, registerLaunchInterceptor } from "./launchInterceptor";
+import type { LaunchPrompts } from "./launchVerdict";
 import type { GateVerdict, LaunchGateOps } from "./launchGate";
 import type { SyncConflict } from "../types";
 import type { GameRunningReading } from "./sessionManager";
@@ -33,8 +34,8 @@ vi.mock("../api/backend", () => ({
   renewPruneConflictLease: vi.fn(),
   logInfo: vi.fn(),
   logError: vi.fn(),
-  // Not called by launchInterceptor itself — the real connectionState store it
-  // reports reachability into logs each transition through it.
+  // Called by runPreLaunchSync during the watcher's pre-launch sync (D6) and
+  // by connectionState transitions.
   debugLog: vi.fn(),
 }));
 
@@ -1323,16 +1324,18 @@ describe("launchInterceptor — full funnel watcher", () => {
   });
 
   describe("error fallback", () => {
-    it("relaunches (never traps) when the gate throws", async () => {
-      vi.mocked(launchGate.runLaunchGate).mockRejectedValue(new Error("boom"));
+    it("relaunches (never traps) when acting on the verdict throws", async () => {
+      vi.mocked(launchGate.runLaunchGate).mockResolvedValue({ decision: "offline_drift" });
+      prompts.askOfflineDrift.mockRejectedValue(new Error("boom"));
 
       register();
       const handler = captureHandler();
       handler(77, GAME_ID, "LaunchApp", DEEP_LINK_SOURCE);
       await flush();
 
-      // The interceptor's own `.catch(() => allow)` on runLaunchGate maps a
-      // throw to the allow verdict → relaunch. RunGame must have fired.
+      // A throw while acting on the verdict propagates out of the gate loop;
+      // the listener's own catch logs it and falls back to a bare relaunch.
+      expect(backend.logError).toHaveBeenCalledWith("Launch interceptor error: Error: boom");
       expect(runGameMock()).toHaveBeenCalledWith(GAME_ID, "", -1, 100);
     });
   });
@@ -1484,11 +1487,21 @@ describe("launchInterceptor — full funnel watcher", () => {
       // A throw must NOT fail open — it maps to a failed outcome so the gate
       // surfaces sync_failed instead of silently allowing.
       vi.mocked(backend.preLaunchSync).mockRejectedValueOnce(new Error("boom"));
-      expect(await ops.preLaunchSync()).toEqual({
-        success: false,
-        message: "Couldn't sync saves with RomM server.",
-      });
+      expect(await ops.preLaunchSync()).toEqual({ success: false, message: "" });
       expect(backend.logError).toHaveBeenCalledWith(expect.stringContaining("pre-launch sync failed"));
+    });
+
+    it("preLaunchSync: a caught start toasts nothing about a sync that moved saves", async () => {
+      const ops = await captureOps();
+
+      vi.mocked(backend.preLaunchSync).mockResolvedValueOnce({
+        success: true,
+        message: "",
+        uploaded: 1,
+        downloaded: 1,
+      });
+      expect(await ops.preLaunchSync()).toEqual({ success: true, message: "" });
+      expect(toaster.toast).not.toHaveBeenCalled();
     });
 
     it("preLaunchSync: save_shape_unsupported → success, so a shared-card game never nags on launch", async () => {
