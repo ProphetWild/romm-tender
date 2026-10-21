@@ -10,6 +10,8 @@ from __future__ import annotations
 import os
 from typing import Any
 
+from domain.disc_formats import TRACK_DESCRIPTORS
+
 # The suffix a single-file download — a ROM's or a firmware file's — is written
 # under until it is whole, and the one a download RomM serves as a ZIP is written
 # under before it is extracted.
@@ -54,16 +56,19 @@ def needs_m3u(disc_files: list[str], m3u_supported: bool) -> bool:
     no playlist is created for a system whose launch would break on one.
 
     When supported, an M3U is generated for **multi-disc** ROMs (2 or more disc
-    files of any kind — cue/chd/iso — so the emulator can switch discs) and for
-    **single-disc bin/cue** ROMs (exactly one ``.cue`` — so the extract dir can
-    be named after a game-named playlist for ES-DE collapse). Single-disc chd/iso
-    get no M3U: they arrive as single-file downloads that never reach this path.
+    images of any format in ``DISC_IMAGE_EXTENSIONS``, so the emulator can switch
+    discs) and for **single-disc bin/cue** ROMs (exactly one ``.cue`` — so the
+    extract dir can be named after a game-named playlist for ES-DE collapse).
+    Every other single disc gets no M3U; why is
+    docs/architecture/backend-architecture.md, "M3U generation rule". Two
+    descriptors of the same disc (a ``.cue`` beside a ``.ccd``) count once
+    — the caller reduces them with ``one_descriptor_per_disc``.
 
     Parameters
     ----------
     disc_files:
-        Relative paths of disc files (.cue, .chd, .iso) found in the
-        extraction directory. Must already exclude any existing .m3u files.
+        Relative paths of the disc images (``DISC_IMAGE_EXTENSIONS``) found in
+        the extraction directory. Must already exclude any existing .m3u files.
     m3u_supported:
         Whether the target platform supports ``.m3u`` (ES-DE lists it as a
         supported extension for the system).
@@ -91,6 +96,15 @@ def build_m3u_content(disc_files: list[str]) -> str:
     return "\n".join(sorted_files) + "\n"
 
 
+def _first_by_extension(paths: list[str], extensions: tuple[str, ...]) -> str | None:
+    """The first of *paths* ending in the first of *extensions* any of them ends in, case-folded."""
+    for ext in extensions:
+        matches = [p for p in paths if p.lower().endswith(ext)]
+        if matches:
+            return matches[0]
+    return None
+
+
 def detect_launch_file(files: list[tuple[str, int]], m3u_supported: bool) -> str | None:
     """Pick the best launch file from a list of (path, size) tuples.
 
@@ -103,7 +117,13 @@ def detect_launch_file(files: list[tuple[str, int]], m3u_supported: bool) -> str
     4. WiiU disc images: .wud, .wux, .wua
     5. PS3: EBOOT.BIN
     6. 3DS: .3ds > .cia > .cxi
-    7. Largest file by size
+    7. Any other multi-track descriptor: .gdi > .ccd > .toc > .mds
+    8. Largest file by size
+
+    The other descriptors come after the platform rules because their
+    extensions also name files inside a game's own data — a PS3 dump can carry a
+    ``levels.toc`` under ``USRDIR`` — and a layout one of those rules recognises
+    launches from it, never from such a file.
 
     Parameters
     ----------
@@ -152,6 +172,11 @@ def detect_launch_file(files: list[tuple[str, int]], m3u_supported: bool) -> str
         matches = [p for p in paths if p.lower().endswith(ext)]
         if matches:
             return matches[0]
+
+    # The descriptor, never the largest track, is what an emulator opens.
+    descriptor = _first_by_extension(paths, tuple(ext for ext in TRACK_DESCRIPTORS if ext != ".cue"))
+    if descriptor is not None:
+        return descriptor
 
     # Largest file by pre-computed size
     return max(files, key=lambda t: t[1])[0]

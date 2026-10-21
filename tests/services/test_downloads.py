@@ -33,6 +33,7 @@ from adapters.adoption_move import AdoptionMoveAdapter
 from adapters.download_file import DownloadFileAdapter
 from adapters.rom_files import RomFileAdapter
 from domain.platform_system import NO_SYSTEM, SWITCHED_OFF, PlatformSystem
+from domain.refusal import DomainRefused
 from domain.retrodeck_folders import GAME_DOWNLOAD, FolderRefused, finding_refusal, switched_off
 from domain.rom import Rom
 from domain.rom_adoption import TargetOccupied
@@ -43,7 +44,8 @@ from domain.version_metadata import VersionMetadata
 from lib.errors import NotInstalled, Refused, RommNotFoundError
 from lib.prune_conflicts import PruneConflicts
 from services.active_core_resolver import ActiveCoreResolver, ActiveCoreResolverConfig
-from services.downloads import DownloadService, DownloadServiceConfig, _DownloadControl
+from services.downloads import DownloadService, DownloadServiceConfig
+from services.downloads.service import _DownloadControl
 from services.rom_adoption import RomAdoptionService, RomAdoptionServiceConfig
 from services.rom_adoption.renamer import AdoptionIncomplete
 from services.rom_install_recorder import RomInstallRecorder, RomInstallRecorderConfig
@@ -128,14 +130,15 @@ def _seed_group_member(
 
 
 def _hops_answering(answer: Any) -> AsyncMock:
-    """An executor stand-in whose every hop answers *answer*, but for the download's platform question.
+    """An executor stand-in whose every hop answers *answer*, but for two questions about this machine.
 
-    That one runs inline: it answers the platform's system, which a stubbed
-    ROM read has nothing to say about.
+    Those run inline: the platform's system, and whether a whole download
+    already sits on disk — neither is something a stubbed ROM read can answer.
     """
 
     async def hop(_executor: Any, fn: Any, *args: Any) -> Any:
-        return fn(*args) if getattr(fn, "__name__", "") == "_download_platform_io" else answer
+        inline = getattr(fn, "__name__", "") in {"_download_platform_io", "kept_download_complete"}
+        return fn(*args) if inline else answer
 
     return AsyncMock(side_effect=hop)
 
@@ -1094,21 +1097,21 @@ class TestDetectLaunchFile:
         (tmp_path / "disc1.cue").write_text("cue data")
         (tmp_path / "disc1.bin").write_bytes(b"\x00" * 1000)
 
-        result = downloads.service._collect_and_detect_launch_file(str(tmp_path), True)
+        result = downloads.service._unpacker().detect_launch_file(str(tmp_path), True)
         assert result.endswith(".m3u")
 
     def test_falls_back_to_cue(self, downloads, tmp_path):
         (tmp_path / "disc1.cue").write_text("cue data")
         (tmp_path / "disc1.bin").write_bytes(b"\x00" * 1000)
 
-        result = downloads.service._collect_and_detect_launch_file(str(tmp_path), True)
+        result = downloads.service._unpacker().detect_launch_file(str(tmp_path), True)
         assert result.endswith(".cue")
 
     def test_falls_back_to_largest(self, downloads, tmp_path):
         (tmp_path / "small.bin").write_bytes(b"\x00" * 100)
         (tmp_path / "large.bin").write_bytes(b"\x00" * 10000)
 
-        result = downloads.service._collect_and_detect_launch_file(str(tmp_path), True)
+        result = downloads.service._unpacker().detect_launch_file(str(tmp_path), True)
         assert result.endswith("large.bin")
 
     def test_wiiu_rpx_in_code_subdir(self, downloads, tmp_path):
@@ -1118,26 +1121,26 @@ class TestDetectLaunchFile:
         (tmp_path / "meta" / "meta.xml").parent.mkdir()
         (tmp_path / "meta" / "meta.xml").write_text("<xml/>")
 
-        result = downloads.service._collect_and_detect_launch_file(str(tmp_path), True)
+        result = downloads.service._unpacker().detect_launch_file(str(tmp_path), True)
         assert result.endswith(".rpx")
 
     def test_wiiu_disc_image(self, downloads, tmp_path):
         (tmp_path / "game.wux").write_bytes(b"\x00" * 1000)
         (tmp_path / "readme.txt").write_text("info")
 
-        result = downloads.service._collect_and_detect_launch_file(str(tmp_path), True)
+        result = downloads.service._unpacker().detect_launch_file(str(tmp_path), True)
         assert result.endswith(".wux")
 
     def test_wiiu_wud_format(self, downloads, tmp_path):
         (tmp_path / "game.wud").write_bytes(b"\x00" * 1000)
 
-        result = downloads.service._collect_and_detect_launch_file(str(tmp_path), True)
+        result = downloads.service._unpacker().detect_launch_file(str(tmp_path), True)
         assert result.endswith(".wud")
 
     def test_wiiu_wua_format(self, downloads, tmp_path):
         (tmp_path / "game.wua").write_bytes(b"\x00" * 1000)
 
-        result = downloads.service._collect_and_detect_launch_file(str(tmp_path), True)
+        result = downloads.service._unpacker().detect_launch_file(str(tmp_path), True)
         assert result.endswith(".wua")
 
     def test_ps3_eboot_bin(self, downloads, tmp_path):
@@ -1146,21 +1149,21 @@ class TestDetectLaunchFile:
         (usrdir / "EBOOT.BIN").write_bytes(b"\x00" * 500)
         (tmp_path / "PS3_GAME" / "PARAM.SFO").write_bytes(b"\x00" * 100)
 
-        result = downloads.service._collect_and_detect_launch_file(str(tmp_path), True)
+        result = downloads.service._unpacker().detect_launch_file(str(tmp_path), True)
         assert result.endswith("EBOOT.BIN")
 
     def test_3ds_prefers_3ds_over_cia(self, downloads, tmp_path):
         (tmp_path / "game.3ds").write_bytes(b"\x00" * 500)
         (tmp_path / "game.cia").write_bytes(b"\x00" * 500)
 
-        result = downloads.service._collect_and_detect_launch_file(str(tmp_path), True)
+        result = downloads.service._unpacker().detect_launch_file(str(tmp_path), True)
         assert result.endswith(".3ds")
 
     def test_3ds_falls_back_to_cia(self, downloads, tmp_path):
         (tmp_path / "game.cia").write_bytes(b"\x00" * 500)
         (tmp_path / "game.cxi").write_bytes(b"\x00" * 500)
 
-        result = downloads.service._collect_and_detect_launch_file(str(tmp_path), True)
+        result = downloads.service._unpacker().detect_launch_file(str(tmp_path), True)
         assert result.endswith(".cia")
 
     def test_m3u_still_preferred_over_platform_specific(self, downloads, tmp_path):
@@ -1170,7 +1173,7 @@ class TestDetectLaunchFile:
         code_dir.mkdir()
         (code_dir / "game.rpx").write_bytes(b"\x00" * 500)
 
-        result = downloads.service._collect_and_detect_launch_file(str(tmp_path), True)
+        result = downloads.service._unpacker().detect_launch_file(str(tmp_path), True)
         assert result.endswith(".m3u")
 
     def test_bundled_m3u_ignored_when_platform_unsupported(self, downloads, tmp_path):
@@ -1182,7 +1185,7 @@ class TestDetectLaunchFile:
         (tmp_path / "Zelda.m3u").write_text("Zelda.nsp")
         (tmp_path / "Zelda.nsp").write_bytes(b"\x00" * 5000)
 
-        result = downloads.service._collect_and_detect_launch_file(str(tmp_path), False)
+        result = downloads.service._unpacker().detect_launch_file(str(tmp_path), False)
         assert result.endswith(".nsp")
 
     def test_bundled_m3u_ignored_unsupported_falls_back_to_cue(self, downloads, tmp_path):
@@ -1191,7 +1194,7 @@ class TestDetectLaunchFile:
         (tmp_path / "disc1.cue").write_text("cue data")
         (tmp_path / "disc1.bin").write_bytes(b"\x00" * 1000)
 
-        result = downloads.service._collect_and_detect_launch_file(str(tmp_path), False)
+        result = downloads.service._unpacker().detect_launch_file(str(tmp_path), False)
         assert result.endswith(".cue")
 
 
@@ -1383,7 +1386,7 @@ class TestMaybeGenerateM3u:
         (tmp_path / "Game - Disc 2.bin").write_bytes(b"\x00" * 1000)
 
         rom_detail = {"fs_name_no_ext": "Final Fantasy VII", "name": "Final Fantasy VII"}
-        downloads.service._maybe_generate_m3u_io(str(tmp_path), rom_detail, True)
+        downloads.service._unpacker().generate_m3u(str(tmp_path), rom_detail, True)
 
         m3u_path = tmp_path / "Final Fantasy VII.m3u"
         assert m3u_path.exists()
@@ -1399,7 +1402,7 @@ class TestMaybeGenerateM3u:
         (tmp_path / "Game (Disc 2).chd").write_bytes(b"\x00" * 100)
 
         rom_detail = {"fs_name_no_ext": "Game", "name": "Game"}
-        downloads.service._maybe_generate_m3u_io(str(tmp_path), rom_detail, True)
+        downloads.service._unpacker().generate_m3u(str(tmp_path), rom_detail, True)
 
         m3u_path = tmp_path / "Game.m3u"
         assert m3u_path.exists()
@@ -1413,7 +1416,7 @@ class TestMaybeGenerateM3u:
         (tmp_path / "disc2.cue").write_text("cue 2")
 
         rom_detail = {"fs_name_no_ext": "Game"}
-        downloads.service._maybe_generate_m3u_io(str(tmp_path), rom_detail, True)
+        downloads.service._unpacker().generate_m3u(str(tmp_path), rom_detail, True)
 
         # Only the original M3U should exist, unchanged
         assert (tmp_path / "existing.m3u").read_text() == "original content"
@@ -1425,7 +1428,7 @@ class TestMaybeGenerateM3u:
         (tmp_path / "disc1.bin").write_bytes(b"\x00" * 1000)
 
         rom_detail = {"fs_name_no_ext": "Metal Gear Solid"}
-        downloads.service._maybe_generate_m3u_io(str(tmp_path), rom_detail, True)
+        downloads.service._unpacker().generate_m3u(str(tmp_path), rom_detail, True)
 
         m3u = tmp_path / "Metal Gear Solid.m3u"
         assert m3u.exists()
@@ -1436,7 +1439,7 @@ class TestMaybeGenerateM3u:
         (tmp_path / "game.chd").write_bytes(b"\x00" * 1000)
 
         rom_detail = {"fs_name_no_ext": "Game"}
-        downloads.service._maybe_generate_m3u_io(str(tmp_path), rom_detail, True)
+        downloads.service._unpacker().generate_m3u(str(tmp_path), rom_detail, True)
 
         assert not (tmp_path / "Game.m3u").exists()
 
@@ -1445,7 +1448,7 @@ class TestMaybeGenerateM3u:
         (tmp_path / "game.iso").write_bytes(b"\x00" * 1000)
 
         rom_detail = {"fs_name_no_ext": "Game"}
-        downloads.service._maybe_generate_m3u_io(str(tmp_path), rom_detail, True)
+        downloads.service._unpacker().generate_m3u(str(tmp_path), rom_detail, True)
 
         assert not (tmp_path / "Game.m3u").exists()
 
@@ -1455,7 +1458,7 @@ class TestMaybeGenerateM3u:
         (tmp_path / "d2.chd").write_bytes(b"\x00" * 100)
 
         rom_detail = {"name": "My Game"}
-        downloads.service._maybe_generate_m3u_io(str(tmp_path), rom_detail, True)
+        downloads.service._unpacker().generate_m3u(str(tmp_path), rom_detail, True)
 
         assert (tmp_path / "My Game.m3u").exists()
 
@@ -1466,7 +1469,7 @@ class TestMaybeGenerateM3u:
         (tmp_path / "Game - Disc 2.cue").write_text("cue 2")
 
         rom_detail = {"fs_name_no_ext": "Game", "name": "Game"}
-        downloads.service._maybe_generate_m3u_io(str(tmp_path), rom_detail, False)
+        downloads.service._unpacker().generate_m3u(str(tmp_path), rom_detail, False)
 
         assert not (tmp_path / "Game.m3u").exists()
 
@@ -1482,7 +1485,7 @@ class TestMaybeGenerateM3u:
         (tmp_path / "PS3_GAME" / "USRDIR" / "part2.iso").write_bytes(b"\x00" * 100)
 
         rom_detail = {"fs_name_no_ext": "MyGame", "name": "MyGame"}
-        downloads.service._maybe_generate_m3u_io(str(tmp_path), rom_detail, True)
+        downloads.service._unpacker().generate_m3u(str(tmp_path), rom_detail, True)
 
         assert not (tmp_path / "MyGame.m3u").exists()
         assert list(tmp_path.rglob("*.m3u")) == []
@@ -1493,13 +1496,13 @@ class TestMaybeGenerateM3u:
         (tmp_path / "Game (Disc 2).chd").write_bytes(b"\x00" * 100)
 
         rom_detail = {"fs_name_no_ext": "Game", "name": "Game"}
-        downloads.service._maybe_generate_m3u_io(str(tmp_path), rom_detail, True)
+        downloads.service._unpacker().generate_m3u(str(tmp_path), rom_detail, True)
 
         assert (tmp_path / "Game.m3u").exists()
 
 
 class TestMaybeHealPs3Sfb:
-    """``_maybe_heal_ps3_sfb_io`` restores a folder-boot dump's mis-suffixed disc SFB (#1212)."""
+    """``DownloadUnpacker.heal_ps3_sfb`` restores a folder-boot dump's mis-suffixed disc SFB (#1212)."""
 
     def _seed_ps3_layout(self, tmp_path):
         """Lay down a PS3 folder-boot layout; return the game root (holds PS3_GAME)."""
@@ -1512,7 +1515,7 @@ class TestMaybeHealPs3Sfb:
         root = self._seed_ps3_layout(tmp_path)
         (root / "PS3_DISC.SFB.txt").write_bytes(b"SFB-BYTES")
 
-        downloads.service._maybe_heal_ps3_sfb_io(str(root))
+        downloads.service._unpacker().heal_ps3_sfb(str(root))
 
         sfb = root / "PS3_DISC.SFB"
         assert sfb.exists()
@@ -1529,7 +1532,7 @@ class TestMaybeHealPs3Sfb:
         eboot.write_bytes(b"\x00" * 16)
         (inner / "PS3_DISC.SFB.txt").write_bytes(b"SFB")
 
-        downloads.service._maybe_heal_ps3_sfb_io(str(tmp_path))
+        downloads.service._unpacker().heal_ps3_sfb(str(tmp_path))
 
         assert (inner / "PS3_DISC.SFB").exists()
 
@@ -1538,14 +1541,14 @@ class TestMaybeHealPs3Sfb:
         (root / "PS3_DISC.SFB").write_bytes(b"REAL")
         (root / "PS3_DISC.SFB.txt").write_bytes(b"WRONG")
 
-        downloads.service._maybe_heal_ps3_sfb_io(str(root))
+        downloads.service._unpacker().heal_ps3_sfb(str(root))
 
         assert (root / "PS3_DISC.SFB").read_bytes() == b"REAL"
 
     def test_no_sfb_txt_does_nothing(self, downloads, tmp_path):
         root = self._seed_ps3_layout(tmp_path)
 
-        downloads.service._maybe_heal_ps3_sfb_io(str(root))
+        downloads.service._unpacker().heal_ps3_sfb(str(root))
 
         assert not (root / "PS3_DISC.SFB").exists()
 
@@ -1554,7 +1557,7 @@ class TestMaybeHealPs3Sfb:
         (tmp_path / "PS3_DISC.SFB.txt").write_bytes(b"SFB")
         (tmp_path / "game.iso").write_bytes(b"\x00" * 100)
 
-        downloads.service._maybe_heal_ps3_sfb_io(str(tmp_path))
+        downloads.service._unpacker().heal_ps3_sfb(str(tmp_path))
 
         assert not (tmp_path / "PS3_DISC.SFB").exists()
 
@@ -2300,16 +2303,39 @@ class TestDoDownloadMultiFile:
         assert downloads.service._download_queue[4778]["status"] == "failed"
 
     @pytest.mark.asyncio
-    async def test_multi_file_emits_extracting_progress(self, downloads, tmp_path, emit):
+    async def test_multi_file_emits_extracting_progress(self, downloads, tmp_path, emit, monkeypatch):
         """A multi-file download emits ``download_progress`` ``status:"extracting"``
         frames after the byte transfer, then ``download_complete`` after.
 
         Drives the real adapter's streaming extraction through the fake store so
         the passed extract callback fires per member; the final tick (extracted
         == total) always bypasses the throttle, so at least one extracting frame
-        lands regardless of the fake clock.
+        lands regardless of the fake clock. Every executor hop settles behind the
+        ticks it queued, the order 3.12 keeps: from 3.13 a hop that finished
+        before it was chained settles at once, and its ticks are then dropped as
+        the comment at ``DownloadService._live_entry`` says.
         """
         from unittest.mock import patch
+
+        loop = asyncio.get_running_loop()
+        run_in_executor = loop.run_in_executor
+
+        def settle_behind_its_ticks(executor, fn, *args):
+            hop = run_in_executor(executor, fn, *args)
+            behind = loop.create_future()
+
+            def copy(done):
+                if done.cancelled():
+                    behind.cancel()
+                elif done.exception() is not None:
+                    behind.set_exception(done.exception())
+                else:
+                    behind.set_result(done.result())
+
+            hop.add_done_callback(lambda done: loop.call_soon(copy, done))
+            return behind
+
+        monkeypatch.setattr(loop, "run_in_executor", settle_behind_its_ticks)
 
         from fakes.fake_download_file_store import FakeDownloadFileStore
 
@@ -3918,7 +3944,7 @@ class TestMaybeGenerateM3uMixedFormats:
         (tmp_path / "disc2.chd").write_bytes(b"\x00" * 100)
 
         rom_detail = {"fs_name_no_ext": "Mixed Game", "name": "Mixed Game"}
-        downloads.service._maybe_generate_m3u_io(str(tmp_path), rom_detail, True)
+        downloads.service._unpacker().generate_m3u(str(tmp_path), rom_detail, True)
 
         m3u_path = tmp_path / "Mixed Game.m3u"
         assert m3u_path.exists()
@@ -3943,7 +3969,7 @@ class TestMaybeGenerateM3uSpecialCharacters:
             (tmp_path / name).write_text("cue data")
 
         rom_detail = {"fs_name_no_ext": "Game", "name": "Game"}
-        downloads.service._maybe_generate_m3u_io(str(tmp_path), rom_detail, True)
+        downloads.service._unpacker().generate_m3u(str(tmp_path), rom_detail, True)
 
         m3u_path = tmp_path / "Game.m3u"
         assert m3u_path.exists()
@@ -5251,7 +5277,7 @@ class TestDoDownloadCancelReconcile:
         started = threading.Event()
         release = threading.Event()
 
-        def blocking_post_io_multi(rom_id, _detail, tpath, _fname, system, extract_dir_name):
+        def blocking_post_io_multi(rom_id, _detail, tpath, _fname, system, extract_dir_name, _reserved_bytes=0):
             # Faithful post-condition of a committed multi-file install: an extract
             # dir with a launch file + a saved RomInstall row.
             started.set()
@@ -6447,7 +6473,9 @@ class TestResumeSupersede:
         assert result["success"] is True
         # No stored replace answer on this entry, so the resume carries False —
         # the exemption is scoped to the download that was actually admitted.
-        downloads.service._begin_download.assert_awaited_once_with(2, resume=True, replace_existing=False)
+        downloads.service._begin_download.assert_awaited_once_with(
+            2, resume=True, replace_existing=False, confirmed_paths=None
+        )
 
     @pytest.mark.asyncio
     async def test_resume_aborts_and_releases_in_progress_on_removal_failure(self, downloads):
@@ -6697,3 +6725,725 @@ class TestTheDownloadCompleteLease:
         await _let_the_task_end(service, 42, downloads.prune_conflicts, release)
 
         assert seen == [["start_download"]]
+
+
+def _zip_bytes(members: dict[str, bytes]) -> bytes:
+    """A real stored ZIP holding *members*, the bytes a single zip on RomM arrives as."""
+    import io
+    import zipfile
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_STORED) as archive:
+        for name, data in members.items():
+            archive.writestr(name, data)
+    return buffer.getvalue()
+
+
+_SATURN_SET = {
+    "Game.cue": b'FILE "Game (Track 1).bin" BINARY\n',
+    "Game (Track 1).bin": b"\x01" * 300,
+    "Game (Track 2).bin": b"\x02" * 200,
+}
+
+
+def _single_zip_detail(payload: bytes, *, rom_id: int = 77, system: str = "saturn", **extra: Any) -> dict[str, Any]:
+    return {
+        "id": rom_id,
+        "name": "Game",
+        "fs_name": "Game.zip",
+        "fs_name_no_ext": "Game",
+        "fs_size_bytes": len(payload),
+        "platform_slug": system,
+        "platform_name": system,
+        **extra,
+    }
+
+
+class TestASingleZipHoldingADisc:
+    """A single ``.zip`` holding a disc image is unpacked like a multi-file download (#910 D1, D5)."""
+
+    @pytest.fixture
+    def roms(self, downloads, tmp_path):
+        roms = tmp_path / "retrodeck" / "roms"
+        downloads.service._retrodeck_folders = FakeRetroDeckFolders(roms=str(roms), bios=str(tmp_path / "bios"))
+        downloads.removal._retrodeck_folders = FakeRetroDeckFolders(roms=str(roms))
+        return roms
+
+    async def _download(self, downloads, roms, members, *, system="saturn", rom_id=77, **extra):
+        from unittest.mock import patch
+
+        payload = _zip_bytes(members)
+        detail = _single_zip_detail(payload, rom_id=rom_id, system=system, **extra)
+        platform_dir = roms / system
+        platform_dir.mkdir(parents=True, exist_ok=True)
+        target = str(platform_dir / "Game.zip")
+        _seed_rom(downloads.uow, rom_id, platform_slug=system)
+        downloads.service._download_queue[rom_id] = {"rom_id": rom_id, "status": "downloading", "progress": 0}
+
+        def transfer(_rom_id, _filename, dest, _progress_callback=None, *, resume=False, on_meta=None):
+            with open(dest, "wb") as f:
+                f.write(payload)
+
+        with patch.object(downloads.romm_api, "download_rom_content", side_effect=transfer) as fetched:
+            await downloads.service._do_download(rom_id, detail, target, system, "Game.zip")
+        return target, detail, fetched
+
+    async def test_a_cue_with_its_tracks_is_unpacked_into_its_own_folder(self, downloads, roms):
+        target, _detail, _fetched = await self._download(downloads, roms, _SATURN_SET)
+
+        folder = roms / "saturn" / "Game.m3u"
+        installed = downloads.uow.rom_installs.get(77)
+        assert installed is not None
+        assert installed.rom_dir == str(folder)
+        assert installed.file_path == str(folder / "Game.m3u")
+        assert (folder / "Game.m3u").read_text() == "Game.cue\n"
+        assert (folder / "Game (Track 1).bin").exists()
+        assert (folder / "Game (Track 2).bin").exists()
+        assert not os.path.exists(target)
+        assert not os.path.exists(target + TMP_EXT)
+
+    async def test_on_a_system_without_m3u_it_launches_its_cue(self, downloads, roms):
+        downloads.m3u_supported = False
+
+        await self._download(downloads, roms, _SATURN_SET)
+
+        installed = downloads.uow.rom_installs.get(77)
+        assert installed is not None
+        assert installed.file_path == str(roms / "saturn" / "Game.cue" / "Game.cue")
+        assert installed.rom_dir == str(roms / "saturn" / "Game.cue")
+
+    @pytest.mark.parametrize("image", ["Game.rvz", "Game.wbfs"])
+    async def test_a_wii_image_is_unpacked_the_same_way(self, downloads, roms, image):
+        target, _detail, _fetched = await self._download(downloads, roms, {image: b"\x00" * 400}, system="wii")
+
+        folder = roms / "wii" / image
+        installed = downloads.uow.rom_installs.get(77)
+        assert installed is not None
+        assert installed.file_path == str(folder / image)
+        assert installed.rom_dir == str(folder)
+        assert not os.path.exists(target)
+
+    async def test_a_gdi_set_launches_its_gdi_not_its_largest_track(self, downloads, roms):
+        members = {"Game.gdi": b"3\n", "track01.bin": b"\x00" * 50, "track03.raw": b"\x00" * 900}
+
+        await self._download(downloads, roms, members, system="dreamcast")
+
+        installed = downloads.uow.rom_installs.get(77)
+        assert installed is not None
+        assert os.path.basename(installed.file_path) == "Game.gdi"
+
+    @pytest.mark.parametrize(
+        "members",
+        [
+            {"Game.gba": b"\x00" * 64},
+            {"mslug.rom": b"\x00" * 64, "mslug.c1": b"\x00" * 64},
+            {"Game.bin": b"\x00" * 64},
+            {"Game.img": b"\x00" * 64, "Game.sub": b"\x00" * 8},
+        ],
+        ids=["cartridge", "arcade romset", "bin alone", "img without ccd"],
+    )
+    async def test_a_zip_holding_no_disc_image_is_kept_as_it_is(self, downloads, roms, members):
+        target, _detail, _fetched = await self._download(downloads, roms, members, system="gba")
+
+        installed = downloads.uow.rom_installs.get(77)
+        assert installed is not None
+        assert installed.file_path == target
+        assert installed.rom_dir is None
+        assert os.path.isfile(target)
+        assert not (roms / "gba" / "Game").exists()
+
+    async def test_a_file_named_zip_that_opens_as_none_is_kept_as_it_is(self, downloads, roms):
+        from unittest.mock import patch
+
+        platform_dir = roms / "saturn"
+        platform_dir.mkdir(parents=True)
+        target = str(platform_dir / "Game.zip")
+        detail = _single_zip_detail(b"not a zip at all")
+        _seed_rom(downloads.uow, 77, platform_slug="saturn")
+        downloads.service._download_queue[77] = {"rom_id": 77, "status": "downloading", "progress": 0}
+
+        def transfer(_rom_id, _filename, dest, _progress_callback=None, *, resume=False, on_meta=None):
+            with open(dest, "wb") as f:
+                f.write(b"not a zip at all")
+
+        with patch.object(downloads.romm_api, "download_rom_content", side_effect=transfer):
+            await downloads.service._do_download(77, detail, target, "saturn", "Game.zip")
+
+        installed = downloads.uow.rom_installs.get(77)
+        assert installed is not None
+        assert installed.file_path == target
+        assert installed.rom_dir is None
+
+    async def test_a_set_in_a_wrapper_folder_unpacks_flat_and_collapses(self, downloads, roms):
+        wrapped = {f"Game/{name}": data for name, data in _SATURN_SET.items()}
+
+        target, _detail, _fetched = await self._download(downloads, roms, wrapped)
+
+        folder = roms / "saturn" / "Game.m3u"
+        installed = downloads.uow.rom_installs.get(77)
+        assert installed is not None
+        assert installed.rom_dir == str(folder)
+        assert installed.file_path == str(folder / "Game.m3u")
+        assert (folder / "Game.m3u").read_text() == "Game.cue\n"
+        assert (folder / "Game (Track 2).bin").exists()
+        assert not (folder / "Game").exists()
+        assert not os.path.exists(target)
+
+    async def test_an_rvz_in_a_wrapper_folder_launches_from_the_collapsed_folder(self, downloads, roms):
+        await self._download(downloads, roms, {"Game/Game.rvz": b"\x00" * 400}, system="wii")
+
+        folder = roms / "wii" / "Game.rvz"
+        installed = downloads.uow.rom_installs.get(77)
+        assert installed is not None
+        assert installed.rom_dir == str(folder)
+        assert installed.file_path == str(folder / "Game.rvz")
+
+    async def test_a_zip_made_by_macos_finder_unpacks_without_its_resource_forks(self, downloads, roms):
+        members = {f"Game/{name}": data for name, data in _SATURN_SET.items()}
+        members["__MACOSX/Game/._Game.cue"] = b"fork"
+
+        await self._download(downloads, roms, members)
+
+        folder = roms / "saturn" / "Game.m3u"
+        installed = downloads.uow.rom_installs.get(77)
+        assert installed is not None
+        assert installed.rom_dir == str(folder)
+        assert sorted(p.name for p in folder.iterdir()) == [
+            "Game (Track 1).bin",
+            "Game (Track 2).bin",
+            "Game.cue",
+            "Game.m3u",
+        ]
+
+    async def test_a_wrapper_beside_a_backslash_folder_entry_unpacks_flat_without_it(self, downloads, roms):
+        # zipfile reads only a trailing "/" as a directory, so the local listing
+        # keeps "Extras\\" as a member — it must neither hide the wrapper nor land
+        # as an empty file in the game's folder.
+        members = {f"Game/{name}": data for name, data in _SATURN_SET.items()}
+        members["Extras\\"] = b""
+
+        await self._download(downloads, roms, members)
+
+        folder = roms / "saturn" / "Game.m3u"
+        installed = downloads.uow.rom_installs.get(77)
+        assert installed is not None
+        assert installed.file_path == str(folder / "Game.m3u")
+        assert sorted(p.name for p in folder.iterdir()) == [
+            "Game (Track 1).bin",
+            "Game (Track 2).bin",
+            "Game.cue",
+            "Game.m3u",
+        ]
+
+    async def test_a_dos_game_in_a_wrapper_folder_with_its_cd_is_kept(self, downloads, roms):
+        members = {"Game/GAME.EXE": b"MZ", "Game/cd/game.cue": b"FILE", "Game/cd/game.bin": b"\x00" * 64}
+
+        target, _detail, _fetched = await self._download(downloads, roms, members, system="dos")
+
+        installed = downloads.uow.rom_installs.get(77)
+        assert installed is not None
+        assert installed.file_path == target
+        assert installed.rom_dir is None
+
+    async def test_a_members_name_is_kept_as_the_zip_spells_it(self, downloads, roms):
+        members = {"Game.cue": b'FILE "Track%2001.bin" BINARY\n', "Track%2001.bin": b"\x01" * 64}
+
+        await self._download(downloads, roms, members)
+
+        installed = downloads.uow.rom_installs.get(77)
+        assert installed is not None
+        assert (Path(installed.rom_dir) / "Track%2001.bin").exists()
+
+    async def test_an_upper_case_cue_counts_as_a_disc_image(self, downloads, roms):
+        await self._download(downloads, roms, {"GAME.CUE": b"FILE", "GAME.BIN": b"\x00" * 64})
+
+        installed = downloads.uow.rom_installs.get(77)
+        assert installed is not None
+        assert installed.rom_dir is not None
+
+    async def test_uninstalling_it_removes_the_whole_folder(self, downloads, roms):
+        await self._download(downloads, roms, _SATURN_SET)
+        folder = roms / "saturn" / "Game.m3u"
+        assert folder.is_dir()
+
+        result = await downloads.removal.remove_rom(77)
+
+        assert result["success"] is True
+        assert not folder.exists()
+        assert (roms / "saturn").is_dir()
+
+    async def test_a_replaced_zip_goes_once_the_unpacked_install_is_recorded(self, downloads, roms):
+        platform_dir = roms / "saturn"
+        platform_dir.mkdir(parents=True)
+        (platform_dir / "Game.zip").write_bytes(b"the user's own zip")
+
+        target, _detail, _fetched = await self._download(downloads, roms, _SATURN_SET)
+
+        assert downloads.uow.rom_installs.get(77) is not None
+        assert not os.path.exists(target)
+
+    async def test_a_failed_unpack_keeps_the_replaced_zip(self, downloads, roms):
+        platform_dir = roms / "saturn"
+        platform_dir.mkdir(parents=True)
+        (platform_dir / "Game.zip").write_bytes(b"the user's own zip")
+        downloads.service._download_file_store.extract_zip = MagicMock(side_effect=OSError("card pulled"))
+
+        target, _detail, _fetched = await self._download(downloads, roms, _SATURN_SET)
+
+        assert downloads.uow.rom_installs.get(77) is None
+        assert Path(target).read_bytes() == b"the user's own zip"
+        assert not (platform_dir / "Game").exists()
+
+    async def test_a_listing_that_named_no_disc_does_not_unpack_over_an_unasked_folder(self, downloads, roms):
+        # RomM's stale listing said cartridge, so the gate never asked about the
+        # folder; the zip that arrived does hold a disc, and a folder is there.
+        (roms / "saturn" / "Game").mkdir(parents=True)
+        (roms / "saturn" / "Game" / "notes.txt").write_text("mine")
+        listing = [{"file_name": "Game.zip", "archive_members": [{"name": "Game.gba", "size": 64}]}]
+
+        target, _detail, _fetched = await self._download(downloads, roms, _SATURN_SET, files=listing)
+
+        installed = downloads.uow.rom_installs.get(77)
+        assert installed is not None
+        assert installed.file_path == target
+        assert (roms / "saturn" / "Game" / "notes.txt").read_text() == "mine"
+
+
+class TestTooLittleSpaceToUnpack:
+    """Too little space before unpacking fails, keeps the download and records nothing (#910 D3)."""
+
+    @pytest.fixture
+    def roms(self, downloads, tmp_path):
+        roms = tmp_path / "retrodeck" / "roms"
+        downloads.service._retrodeck_folders = FakeRetroDeckFolders(roms=str(roms), bios=str(tmp_path / "bios"))
+        downloads.removal._retrodeck_folders = FakeRetroDeckFolders(roms=str(roms))
+        (roms / "saturn").mkdir(parents=True)
+        return roms
+
+    async def _run(self, downloads, detail, target, payload, emit):
+        from unittest.mock import patch
+
+        downloads.service._download_queue[detail["id"]] = {"rom_id": detail["id"], "status": "downloading"}
+
+        def transfer(_rom_id, _filename, dest, _progress_callback=None, *, resume=False, on_meta=None):
+            with open(dest, "wb") as f:
+                f.write(payload)
+
+        with patch.object(downloads.romm_api, "download_rom_content", side_effect=transfer) as fetched:
+            await downloads.service._do_download(detail["id"], detail, target, "saturn", os.path.basename(target))
+        failures = [c.args[1] for c in emit.call_args_list if c.args[0] == "download_failed"]
+        return fetched, failures
+
+    @pytest.mark.parametrize("multi", [False, True], ids=["single zip", "multi-file"])
+    async def test_it_fails_keeps_the_file_and_a_retry_unpacks_without_downloading(self, downloads, roms, emit, multi):
+        payload = _zip_bytes(_SATURN_SET)
+        detail = _single_zip_detail(payload)
+        if multi:
+            detail = {**detail, "has_multiple_files": True}
+        target = str(roms / "saturn" / "Game.zip")
+        kept = target + (ZIP_TMP_EXT if multi else TMP_EXT)
+        _seed_rom(downloads.uow, 77, platform_slug="saturn")
+        store = downloads.service._download_file_store
+        store.disk_free = lambda _path: 1024
+
+        _fetched, failures = await self._run(downloads, detail, target, payload, emit)
+
+        assert [f["error_message"] for f in failures] == ["Not enough space to unpack (0MB free, need 100MB)"]
+        assert downloads.uow.rom_installs.get(77) is None
+        assert Path(kept).read_bytes() == payload
+        assert not (roms / "saturn" / "Game").exists()
+
+        store.disk_free = lambda _path: 10 * 1024**3
+        fetched, failures = await self._run(downloads, detail, target, payload, emit)
+
+        fetched.assert_not_called()
+        installed = downloads.uow.rom_installs.get(77)
+        assert installed is not None
+        assert installed.rom_dir == str(roms / "saturn" / "Game.m3u")
+        assert not os.path.exists(kept)
+
+    async def test_what_another_download_claimed_is_not_free_for_the_unpack(self, downloads, roms, emit):
+        payload = _zip_bytes(_SATURN_SET)
+        detail = _single_zip_detail(payload)
+        target = str(roms / "saturn" / "Game.zip")
+        _seed_rom(downloads.uow, 77, platform_slug="saturn")
+        downloads.service._download_file_store.disk_free = lambda _path: 10 * 1024**3
+        downloads.service._reserved_bytes[99] = 10 * 1024**3
+
+        _fetched, failures = await self._run(downloads, detail, target, payload, emit)
+
+        assert [f["error_message"] for f in failures] == ["Not enough space to unpack (0MB free, need 100MB)"]
+        assert downloads.uow.rom_installs.get(77) is None
+        assert Path(target + TMP_EXT).read_bytes() == payload
+
+    async def test_another_downloads_claim_counts_only_what_it_has_not_written(self, downloads, roms, emit):
+        payload = _zip_bytes(_SATURN_SET)
+        detail = _single_zip_detail(payload)
+        target = str(roms / "saturn" / "Game.zip")
+        _seed_rom(downloads.uow, 77, platform_slug="saturn")
+        downloads.service._download_file_store.disk_free = lambda _path: 10 * 1024**3
+        # Another download claimed 10 GiB and has transferred all of it, which
+        # the free space already lacks.
+        downloads.service._reserved_bytes[99] = 10 * 1024**3
+        downloads.service._download_queue[99] = {"rom_id": 99, "status": "downloading"}
+        downloads.service._apply_progress("downloading", 99, "Other", "", "other.zip", 100, 10 * 1024**3, 10 * 1024**3)
+
+        _fetched, failures = await self._run(downloads, detail, target, payload, emit)
+
+        assert failures == []
+        assert downloads.uow.rom_installs.get(77) is not None
+
+    async def test_what_another_download_has_unpacked_counts_as_written_too(self, downloads, roms, emit):
+        payload = _zip_bytes(_SATURN_SET)
+        detail = _single_zip_detail(payload)
+        target = str(roms / "saturn" / "Game.zip")
+        _seed_rom(downloads.uow, 77, platform_slug="saturn")
+        downloads.service._download_file_store.disk_free = lambda _path: 4 * 1024**3 + 200 * 1024 * 1024
+        # Claimed 10 GiB, transferred 5 GiB and unpacked 1 GiB of it so far: 4 GiB
+        # of the claim are still to come, which leaves 200 MiB for this unpack.
+        downloads.service._reserved_bytes[99] = 10 * 1024**3
+        downloads.service._download_queue[99] = {"rom_id": 99, "status": "downloading"}
+        downloads.service._apply_progress("downloading", 99, "Other", "", "other.zip", 100, 5 * 1024**3, 5 * 1024**3)
+        downloads.service._apply_progress("extracting", 99, "Other", "", "other.zip", 20, 1024**3, 5 * 1024**3)
+
+        _fetched, failures = await self._run(downloads, detail, target, payload, emit)
+
+        assert failures == []
+        assert downloads.uow.rom_installs.get(77) is not None
+
+    async def test_a_resumed_downloads_earlier_bytes_are_not_counted_as_written_again(self, downloads, roms, emit):
+        payload = _zip_bytes(_SATURN_SET)
+        detail = _single_zip_detail(payload)
+        target = str(roms / "saturn" / "Game.zip")
+        _seed_rom(downloads.uow, 77, platform_slug="saturn")
+        downloads.service._download_file_store.disk_free = lambda _path: 5 * 1024**3
+        # Resumed with 5 GiB already on disk, which its claim of 5 GiB left out;
+        # its transfer reports that 5 GiB again before a new byte arrives.
+        downloads.service._reserved_bytes[99] = 5 * 1024**3
+        downloads.service._download_queue[99] = {
+            "rom_id": 99,
+            "status": "downloading",
+            "_on_disk_at_start": 5 * 1024**3,
+        }
+        downloads.service._apply_progress("downloading", 99, "Other", "", "other.zip", 50, 5 * 1024**3, 10 * 1024**3)
+
+        _fetched, failures = await self._run(downloads, detail, target, payload, emit)
+
+        assert [f["error_message"] for f in failures] == ["Not enough space to unpack (0MB free, need 100MB)"]
+
+    async def test_the_kept_check_runs_off_the_loop(self, downloads, roms, emit, monkeypatch):
+        from services.downloads.unpack import DownloadUnpacker
+
+        payload = _zip_bytes(_SATURN_SET)
+        detail = _single_zip_detail(payload)
+        target = str(roms / "saturn" / "Game.zip")
+        _seed_rom(downloads.uow, 77, platform_slug="saturn")
+        threads: list[int] = []
+        real = DownloadUnpacker.kept_download_complete
+
+        def recording(self, *args):
+            threads.append(threading.get_ident())
+            return real(self, *args)
+
+        monkeypatch.setattr(DownloadUnpacker, "kept_download_complete", recording)
+
+        await self._run(downloads, detail, target, payload, emit)
+
+        assert threads
+        assert threading.get_ident() not in threads
+
+    async def test_the_starts_kept_check_runs_off_the_loop(self, downloads, roms, monkeypatch):
+        from unittest.mock import patch
+
+        from services.downloads.unpack import DownloadUnpacker
+
+        payload = _zip_bytes(_SATURN_SET)
+        detail = _single_zip_detail(payload)
+        _seed_rom(downloads.uow, 77, platform_slug="saturn")
+        downloads.adoption._retrodeck_folders = downloads.service._retrodeck_folders
+        downloads.service._tasks.spawn = lambda coro, _name: coro.close()
+        threads: list[int] = []
+        real = DownloadUnpacker.kept_download_complete
+
+        def recording(self, *args):
+            threads.append(threading.get_ident())
+            return real(self, *args)
+
+        monkeypatch.setattr(DownloadUnpacker, "kept_download_complete", recording)
+
+        with patch.object(downloads.romm_api, "get_rom", return_value=detail):
+            result = await downloads.service.start_download(77)
+
+        assert result["success"] is True
+        assert threads
+        assert threading.get_ident() not in threads
+
+    async def test_a_resume_of_a_whole_tmp_asks_for_no_range(self, downloads, roms, emit):
+        from unittest.mock import patch
+
+        payload = _zip_bytes(_SATURN_SET)
+        detail = _single_zip_detail(payload)
+        target = str(roms / "saturn" / "Game.zip")
+        (roms / "saturn" / "Game.zip.tmp").write_bytes(payload)
+        _seed_rom(downloads.uow, 77, platform_slug="saturn")
+        downloads.service._download_queue[77] = {"rom_id": 77, "status": "downloading"}
+
+        with patch.object(downloads.romm_api, "download_rom_content") as fetched:
+            await downloads.service._do_download(77, detail, target, "saturn", "Game.zip", resume=True)
+
+        fetched.assert_not_called()
+        assert downloads.uow.rom_installs.get(77) is not None
+
+    async def test_a_partial_tmp_is_still_downloaded(self, downloads, roms, emit):
+        payload = _zip_bytes(_SATURN_SET)
+        detail = _single_zip_detail(payload)
+        target = str(roms / "saturn" / "Game.zip")
+        (roms / "saturn" / "Game.zip.tmp").write_bytes(payload[:100])
+        _seed_rom(downloads.uow, 77, platform_slug="saturn")
+
+        fetched, _failures = await self._run(downloads, detail, target, payload, emit)
+
+        fetched.assert_called_once()
+        assert downloads.uow.rom_installs.get(77) is not None
+
+    async def test_a_whole_zip_of_another_size_than_romm_states_is_downloaded_again(self, downloads, roms, emit):
+        payload = _zip_bytes(_SATURN_SET)
+        detail = _single_zip_detail(payload)
+        target = str(roms / "saturn" / "Game.zip")
+        (roms / "saturn" / "Game.zip.tmp").write_bytes(_zip_bytes({"Game.cue": b"FILE"}))
+        _seed_rom(downloads.uow, 77, platform_slug="saturn")
+
+        fetched, _failures = await self._run(downloads, detail, target, payload, emit)
+
+        fetched.assert_called_once()
+        installed = downloads.uow.rom_installs.get(77)
+        assert installed is not None
+        assert (Path(installed.rom_dir) / "Game (Track 2).bin").exists()
+
+    async def test_the_retrys_pre_flight_counts_only_what_the_unpack_needs(self, downloads, roms):
+        payload = _zip_bytes(_SATURN_SET)
+        listing = [
+            {
+                "file_name": "Game.zip",
+                "archive_members": [{"name": name, "size": 200 * 1024 * 1024} for name in _SATURN_SET],
+            }
+        ]
+        detail = {**_single_zip_detail(payload), "files": listing}
+        (roms / "saturn" / "Game.zip.tmp").write_bytes(payload)
+        started = _stage_download_prologue(downloads, rom_id=77)
+        downloads.service._loop.run_in_executor = _hops_answering(detail)
+        downloads.service._download_file_store.disk_free = lambda _path: 10 * 1024**3
+
+        result = await downloads.service.start_download(77)
+
+        assert result["success"] is True
+        assert len(started) == 1
+        # The listed members and the headroom, without the zip already on disk.
+        assert downloads.service._reserved_bytes[77] == 700 * 1024 * 1024
+
+
+class TestTheSpaceCheckBeforeTheDownload:
+    """Where RomM lists a single zip's members, the pre-flight counts them too (#910 D3)."""
+
+    def _start(self, downloads, tmp_path, detail):
+        downloads.service._retrodeck_folders = FakeRetroDeckFolders(roms=str(tmp_path / "roms"), bios=str(tmp_path))
+        _stage_download_prologue(downloads, rom_id=77)
+        downloads.service._loop.run_in_executor = _hops_answering(detail)
+        downloads.service._download_file_store.disk_free = lambda _path: 500 * 1024 * 1024
+        return downloads.service.start_download(77)
+
+    @staticmethod
+    def _detail(members: list[dict[str, Any]] | None) -> dict[str, Any]:
+        files: list[dict[str, Any]] = [{"file_name": "Game.zip"}]
+        if members is not None:
+            files[0]["archive_members"] = members
+        return {**_single_zip_detail(b""), "fs_size_bytes": 300 * 1024 * 1024, "files": files}
+
+    async def test_listed_disc_members_are_counted_with_the_zip(self, downloads, tmp_path):
+        detail = self._detail([{"name": "Game.cue", "size": 1024}, {"name": "Game.bin", "size": 300 * 1024 * 1024}])
+
+        with pytest.raises(Refused) as refused:
+            await self._start(downloads, tmp_path, detail)
+
+        assert refused.value.reason == "insufficient_space"
+        assert "need 700MB" in refused.value.message
+
+    async def test_a_nearly_finished_download_claims_only_what_it_has_still_to_write(self, downloads, tmp_path):
+        # 500 MiB free after another download wrote 400 MiB of its 410 MiB claim:
+        # 10 MiB of it are still to come, which leaves room for this 300 MiB zip.
+        downloads.service._reserved_bytes[99] = 410 * 1024 * 1024
+        downloads.service._download_queue[99] = {"rom_id": 99, "status": "downloading"}
+        downloads.service._apply_progress(
+            "downloading", 99, "Other", "", "other.zip", 97, 400 * 1024 * 1024, 410 * 1024 * 1024
+        )
+
+        result = await self._start(downloads, tmp_path, self._detail(None))
+
+        assert result["success"] is True
+
+    @pytest.mark.parametrize(
+        "members",
+        [None, [{"name": "Game.gba", "size": 300 * 1024 * 1024}]],
+        ids=["no listing", "listed cartridge"],
+    )
+    async def test_otherwise_the_zip_alone_is_counted(self, downloads, tmp_path, members):
+        result = await self._start(downloads, tmp_path, self._detail(members))
+
+        assert result["success"] is True
+
+
+class TestABadChecksumFailsTheUnpack:
+    """A member whose CRC-32 does not match fails the unpack and records nothing (#910 D5)."""
+
+    @pytest.mark.parametrize("multi", [False, True], ids=["single zip", "multi-file"])
+    async def test_nothing_is_recorded_and_nothing_is_left(self, downloads, tmp_path, emit, multi):
+        from unittest.mock import patch
+
+        roms = tmp_path / "retrodeck" / "roms"
+        downloads.service._retrodeck_folders = FakeRetroDeckFolders(roms=str(roms), bios=str(tmp_path / "bios"))
+        (roms / "saturn").mkdir(parents=True)
+        intact = _zip_bytes({"Game.cue": b"FILE", "Game.bin": b"ABCD" * 64})
+        payload = intact.replace(b"ABCDABCD", b"ABCEABCD", 1)
+        detail = _single_zip_detail(payload)
+        if multi:
+            detail = {**detail, "has_multiple_files": True}
+        target = str(roms / "saturn" / "Game.zip")
+        _seed_rom(downloads.uow, 77, platform_slug="saturn")
+        downloads.service._download_queue[77] = {"rom_id": 77, "status": "downloading"}
+
+        def transfer(_rom_id, _filename, dest, _progress_callback=None, *, resume=False, on_meta=None):
+            with open(dest, "wb") as f:
+                f.write(payload)
+
+        with patch.object(downloads.romm_api, "download_rom_content", side_effect=transfer):
+            await downloads.service._do_download(77, detail, target, "saturn", "Game.zip")
+
+        (failure,) = [c.args[1] for c in emit.call_args_list if c.args[0] == "download_failed"]
+        assert "Bad CRC-32" in failure["error_message"]
+        assert downloads.uow.rom_installs.get(77) is None
+        assert sorted(os.listdir(roms / "saturn")) == []
+
+
+class TestAnEarlierUnpackedCopyIsTheSameGame:
+    """The target gate claims a single zip's folder as well as its file (#910 D5)."""
+
+    def _stage(self, downloads, tmp_path, detail):
+        roms = tmp_path / "roms"
+        downloads.service._retrodeck_folders = FakeRetroDeckFolders(roms=str(roms), bios=str(tmp_path))
+        _stage_download_prologue(downloads, rom_id=77)
+        downloads.service._loop.run_in_executor = _hops_answering(detail)
+        (roms / "saturn").mkdir(parents=True)
+        return roms / "saturn"
+
+    async def test_its_folder_at_the_extract_path_is_the_target_occupied(self, downloads, tmp_path):
+        platform_dir = self._stage(downloads, tmp_path, _single_zip_detail(b"zip"))
+        (platform_dir / "Game").mkdir()
+        (platform_dir / "Game" / "Game.cue").write_text("FILE")
+
+        with pytest.raises(TargetOccupied) as refused:
+            await downloads.service.start_download(77)
+
+        assert refused.value.details["existing"]["path"] == str(platform_dir / "Game")
+        assert refused.value.details["adoptable"] is True
+
+    async def test_beside_its_zip_the_folder_gets_a_dialog_of_its_own(self, downloads, tmp_path):
+        platform_dir = self._stage(downloads, tmp_path, _single_zip_detail(b"zip"))
+        (platform_dir / "Game.zip").write_bytes(b"the user's zip")
+        (platform_dir / "Game").mkdir()
+        (platform_dir / "Game" / "Game.cue").write_text("FILE")
+
+        confirmed = [str(platform_dir / "Game.zip")]
+
+        with pytest.raises(TargetOccupied) as refused:
+            await downloads.service.start_download(77, True, None, None, False, confirmed)
+
+        assert refused.value.details["existing"]["path"] == str(platform_dir / "Game")
+        assert (platform_dir / "Game" / "Game.cue").exists()
+
+    async def test_a_zip_that_appeared_during_a_pause_gets_its_own_dialog_on_resume(self, downloads, tmp_path):
+        platform_dir = self._stage(downloads, tmp_path, _single_zip_detail(b"zip"))
+        downloads.adoption._retrodeck_folders = downloads.service._retrodeck_folders
+        folder = platform_dir / "Game"
+        folder.mkdir()
+        (folder / "Game.cue").write_text("FILE")
+        started = await downloads.service.start_download(77, True, None, None, False, [str(folder)])
+        assert started["success"] is True
+        downloads.service._download_queue[77]["status"] = "paused"
+        (platform_dir / "Game.zip").write_bytes(b"appeared while paused")
+
+        with pytest.raises(TargetOccupied) as refused:
+            await downloads.service.resume_download(77)
+
+        assert refused.value.details["existing"]["path"] == str(platform_dir / "Game.zip")
+        assert (platform_dir / "Game.zip").read_bytes() == b"appeared while paused"
+
+    async def test_a_resume_still_covers_the_zip_the_start_confirmed(self, downloads, tmp_path):
+        platform_dir = self._stage(downloads, tmp_path, _single_zip_detail(b"zip"))
+        downloads.adoption._retrodeck_folders = downloads.service._retrodeck_folders
+        (platform_dir / "Game.zip").write_bytes(b"the user's zip")
+        zip_path = str(platform_dir / "Game.zip")
+        assert (await downloads.service.start_download(77, True, None, None, False, [zip_path]))["success"] is True
+        downloads.service._download_queue[77]["status"] = "paused"
+
+        resumed = await downloads.service.resume_download(77)
+
+        assert resumed["success"] is True
+        assert (platform_dir / "Game.zip").read_bytes() == b"the user's zip"
+
+    async def test_its_collapsed_folder_is_an_adoption_candidate(self, downloads, tmp_path):
+        platform_dir = self._stage(downloads, tmp_path, _single_zip_detail(b"zip"))
+        (platform_dir / "Game.m3u").mkdir()
+
+        with pytest.raises(DomainRefused) as refused:
+            await downloads.service.start_download(77)
+
+        assert refused.value.reason == "adoption_candidates"
+
+    async def test_a_zip_listed_as_a_cartridge_still_calls_a_folder_the_wrong_shape(self, downloads, tmp_path):
+        listing = [{"file_name": "Game.zip", "archive_members": [{"name": "Game.gba", "size": 64}]}]
+        platform_dir = self._stage(downloads, tmp_path, _single_zip_detail(b"zip", files=listing))
+        (platform_dir / "Game.m3u").mkdir()
+
+        with pytest.raises(DomainRefused) as refused:
+            await downloads.service.start_download(77)
+
+        assert refused.value.reason == "unusable_namesake"
+
+
+class TestTheM3uOverTheNewDiscFormats:
+    """The generated playlist takes every format in ``DISC_IMAGE_EXTENSIONS``, one entry per disc (#910 D4)."""
+
+    def test_a_cue_and_a_ccd_of_one_disc_are_listed_once(self, downloads, tmp_path):
+        for disc in (1, 2):
+            (tmp_path / f"Game (Disc {disc}).cue").write_text("FILE")
+            (tmp_path / f"Game (Disc {disc}).ccd").write_text("[CloneCD]")
+            (tmp_path / f"Game (Disc {disc}).img").write_bytes(b"\x00" * 10)
+
+        downloads.service._unpacker().generate_m3u(str(tmp_path), {"fs_name_no_ext": "Game"}, True)
+
+        assert (tmp_path / "Game.m3u").read_text() == "Game (Disc 1).cue\nGame (Disc 2).cue\n"
+
+    def test_two_rvz_discs_get_a_playlist(self, downloads, tmp_path):
+        (tmp_path / "Game (Disc 1).rvz").write_bytes(b"\x00" * 10)
+        (tmp_path / "Game (Disc 2).rvz").write_bytes(b"\x00" * 10)
+
+        downloads.service._unpacker().generate_m3u(str(tmp_path), {"fs_name_no_ext": "Game"}, True)
+
+        assert (tmp_path / "Game.m3u").read_text() == "Game (Disc 1).rvz\nGame (Disc 2).rvz\n"
+
+    def test_a_two_disc_gdi_set_lists_its_descriptors_only(self, downloads, tmp_path):
+        for disc in (1, 2):
+            (tmp_path / f"Game (Disc {disc}).gdi").write_text("3")
+            (tmp_path / f"track0{disc}.bin").write_bytes(b"\x00" * 10)
+
+        downloads.service._unpacker().generate_m3u(str(tmp_path), {"fs_name_no_ext": "Game"}, True)
+
+        assert (tmp_path / "Game.m3u").read_text() == "Game (Disc 1).gdi\nGame (Disc 2).gdi\n"
+
+    def test_a_system_without_m3u_gets_none(self, downloads, tmp_path):
+        (tmp_path / "Game (Disc 1).rvz").write_bytes(b"\x00" * 10)
+        (tmp_path / "Game (Disc 2).rvz").write_bytes(b"\x00" * 10)
+
+        downloads.service._unpacker().generate_m3u(str(tmp_path), {"fs_name_no_ext": "Game"}, False)
+
+        assert not (tmp_path / "Game.m3u").exists()

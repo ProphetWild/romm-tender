@@ -45,7 +45,7 @@ from domain.rom_adoption import (
     unconfirmed_reason,
     verification_status,
 )
-from domain.rom_candidates import DIR
+from domain.rom_candidates import DIR, FILE
 from domain.rom_files import (
     detect_launch_file,
     is_multi_file_download,
@@ -53,6 +53,7 @@ from domain.rom_files import (
     resolve_local_file_name,
     synthetic_rom_name,
 )
+from domain.served_shape import replace_covers, served_shapes, unpacked_manifest
 from lib.background_tasks import BackgroundTasks
 from lib.errors import Refused, RommApiError, classify_error, romm_error_log_level
 from lib.path_safety import PathTraversalError, coerce_safe_component, is_inside_folder, safe_join
@@ -65,6 +66,7 @@ if TYPE_CHECKING:
     import logging
     from collections.abc import Callable
 
+    from domain.rom_candidates import Kind
     from services.protocols import (
         ActiveCoreReader,
         AdoptionMoveStore,
@@ -105,6 +107,13 @@ _UNCONFIRMED_MESSAGES = {
     "against the files inside it",
 }
 
+
+# A folder unpacked from a zip the server keeps whole can be held only to the
+# member list RomM states for that zip; a library not rescanned since RomM 4.9.0
+# states none.
+_NO_MEMBERS_MESSAGE = (
+    "The server does not list what is inside this game's zip, so a folder cannot be confirmed against it"
+)
 
 _TARGET_TAKEN_MESSAGE = "Something arrived at this game's own location — nothing was moved"
 
@@ -212,6 +221,8 @@ class RomAdoptionService:
         candidate_path=None,
         collision_choice=None,
         page_saw_candidate: bool = False,
+        folder_path: str | None = None,
+        confirmed_paths: list[str] | None = None,
     ) -> AdoptionIncomplete | None:
         """Decide whether a download may write the content it computed *checked_path* for.
 
@@ -235,6 +246,8 @@ class RomAdoptionService:
             candidate_path=candidate_path,
             collision_choice=collision_choice,
             page_saw_candidate=page_saw_candidate,
+            folder_path=folder_path,
+            confirmed_paths=confirmed_paths,
         )
         return await self._loop.run_in_executor(None, worker)
 
@@ -248,10 +261,21 @@ class RomAdoptionService:
         candidate_path=None,
         collision_choice=None,
         page_saw_candidate: bool = False,
+        folder_path: str | None = None,
+        confirmed_paths: list[str] | None = None,
     ) -> AdoptionIncomplete | None:
-        """Synchronous body of the download-target gate. Runs on an executor thread."""
-        existing = self._download_file_store.describe_path(checked_path)
-        if existing is None:
+        """Synchronous body of the download-target gate. Runs on an executor thread.
+
+        *folder_path* is the second place a single zip that may be unpacked
+        claims, the folder it would become, and each path is described as what
+        it is. Which occupied paths *replace* covers is ``replace_covers``'s
+        (``domain/served_shape.py``); one it does not cover is refused, and
+        nothing is cleared before every occupied path is covered.
+        """
+        claimed = [checked_path] if folder_path is None else [checked_path, folder_path]
+        described = [(path, self._download_file_store.describe_path(path)) for path in claimed]
+        found = [(path, existing) for path, existing in described if existing is not None]
+        if not found:
             if replace:
                 return self._discard_candidate(rom_detail, candidate_path, collision_choice)
             # A resume continues a decision already taken: "is this game already
@@ -260,28 +284,44 @@ class RomAdoptionService:
             # precisely what the user declined, so searching again would refuse
             # the transfer they started with no exit but Cancel.
             #
-            # This is NOT the reason ``_replace_existing`` is dropped for a
-            # multi-file replace. There the answer is *spent*: the directory has
-            # already been removed, so anything at that path now is content the
-            # user has never seen and the gate must ask about it. Here nothing was
-            # consumed. Two different reasons, and neither generalises to the
-            # other.
+            # This is NOT the reason ``_replace_existing`` is dropped for a ROM
+            # served only as a folder, nor why a resume never covers the folder
+            # of one served in both shapes. There the answer is *spent*: the
+            # directory has already been removed, so anything at that path now
+            # is content the user has never seen and the gate must ask about it.
+            # Here nothing was consumed. Two different reasons, and neither
+            # generalises to the other.
             if not resume:
-                self._search.refuse_if_found(rom_detail, checked_path, page_saw_candidate=page_saw_candidate)
+                self._search.refuse_if_found(
+                    rom_detail, checked_path, page_saw_candidate=page_saw_candidate, folder_path=folder_path
+                )
             return None
-        if self._is_own_install(rom_detail, checked_path):
-            return None
-        if not replace:
-            raise TargetOccupied(
-                path=existing["path"],
-                kind=existing["kind"],
-                size_bytes=existing["size_bytes"],
-                modified_at=existing["modified_at"],
-                incoming_name=os.path.basename(checked_path),
-                incoming_size=rom_detail.get("fs_size_bytes", 0),
-                served_dir=is_multi_file_download(rom_detail),
+        occupied = [(path, existing) for path, existing in found if not self._is_own_install(rom_detail, path)]
+        covered = replace_covers(
+            [path for path, _existing in occupied],
+            replace=replace,
+            resume=resume,
+            folder_path=folder_path,
+            confirmed_paths=confirmed_paths,
+        )
+        for path, existing in occupied:
+            if path not in covered:
+                raise TargetOccupied(
+                    path=existing["path"],
+                    kind=existing["kind"],
+                    size_bytes=existing["size_bytes"],
+                    modified_at=existing["modified_at"],
+                    incoming_name=os.path.basename(path),
+                    incoming_size=rom_detail.get("fs_size_bytes", 0),
+                    served_dir=path == folder_path or FILE not in served_shapes(rom_detail),
+                )
+        for path, existing in occupied:
+            self._clear_for_replace(
+                rom_detail,
+                path,
+                is_dir=existing["kind"] == DIR,
+                own_file_path=path == checked_path and FILE in served_shapes(rom_detail),
             )
-        self._clear_for_replace(rom_detail, checked_path, is_dir=existing["kind"] == DIR)
         return None
 
     # ── Candidate search ────────────────────────────────────────────
@@ -331,16 +371,19 @@ class RomAdoptionService:
             return False
         return checked_path in (install.rom_dir, install.file_path)
 
-    def _clear_for_replace(self, rom_detail: dict[str, Any], checked_path: str, *, is_dir: bool) -> None:
+    def _clear_for_replace(
+        self, rom_detail: dict[str, Any], checked_path: str, *, is_dir: bool, own_file_path: bool
+    ) -> None:
         """Remove what occupies *checked_path* so the download starts on clean ground.
 
         A directory always goes: ``make_dirs`` is ``exist_ok=True`` and the
         extract would otherwise merge into whatever is already there, leaving a
         hybrid that a later uninstall deletes whole — the user chose replace, not
         merge. A file goes only when a *directory* is about to take its place; a
-        single-file download leaves it, because ``os.replace`` swaps the new
-        bytes in atomically and a delete-then-fetch would leave the user with
-        neither copy if the transfer failed.
+        file at the path the download itself writes (*own_file_path*) stays,
+        because ``os.replace`` swaps the new bytes in atomically — or an unpacked
+        zip removes it once installed — and a delete-then-fetch would leave the
+        user with neither copy if the transfer failed.
 
         That last carve-out is specific to content sitting **at the target path**,
         which is why :meth:`_discard_candidate` removes its subject through
@@ -350,7 +393,7 @@ class RomAdoptionService:
         system = self._download_system(rom_detail)
         if isinstance(system, FolderRefused):
             raise system
-        if not is_dir and not is_multi_file_download(rom_detail):
+        if not is_dir and own_file_path:
             if not is_inside_folder(checked_path, self._rom_folder(system)):
                 raise Refused("unsafe_replace_target", _UNSAFE_REPLACE_MESSAGE)
             return
@@ -427,7 +470,7 @@ class RomAdoptionService:
         """
         if not candidate_path:
             return None
-        target = self._resolve_target(rom_detail)
+        target = self._resolve_target(rom_detail, candidate_path)
         if isinstance(target, FolderRefused):
             raise target
         source_path = self._resolve_source(target, candidate_path)
@@ -438,7 +481,10 @@ class RomAdoptionService:
             return None
         rom_id = int(rom_detail.get("id") or 0)
         stopped, carried, quarantined = self._renamer.move_planned(
-            self._renamer.discarded_save_pairs(rom_id, target, source_path), collision_choice
+            self._renamer.discarded_save_pairs(
+                rom_id, target, source_path, may_unpack=DIR in served_shapes(rom_detail)
+            ),
+            collision_choice,
         )
         if stopped is not None:
             return stopped
@@ -522,7 +568,7 @@ class RomAdoptionService:
         touched the file, so whatever is still there can be adopted again.
         """
         rom_id = int(rom_id)
-        rom_detail, target = await self._loop.run_in_executor(None, self._detail_and_target_io, rom_id)
+        rom_detail, target = await self._loop.run_in_executor(None, self._detail_and_target_io, rom_id, candidate_path)
         if isinstance(target, FolderRefused):
             raise target
         source_path = self._resolve_source(target, candidate_path)
@@ -698,7 +744,9 @@ class RomAdoptionService:
         """
         rom_id = int(rom_id)
         try:
-            rom_detail, target = await self._loop.run_in_executor(None, self._detail_and_target_io, rom_id)
+            rom_detail, target = await self._loop.run_in_executor(
+                None, self._detail_and_target_io, rom_id, candidate_path
+            )
         except RommApiError as e:
             self._logger.log(
                 romm_error_log_level(e), f"Failed to fetch ROM {rom_id} for verification: {type(e).__name__}: {e}"
@@ -728,6 +776,10 @@ class RomAdoptionService:
         if self._download_file_store.describe_path(target.path) is None:
             return {"status": "missing", "message": "There is nothing at this game's location", "differences": []}
         manifest = server_manifest(rom_detail)
+        if target.is_multi and not is_multi_file_download(rom_detail):
+            manifest = unpacked_manifest(manifest)
+            if not manifest:
+                return {"status": "unverifiable", "message": _NO_MEMBERS_MESSAGE, "differences": []}
         if not any(entry.verifiable for entry in manifest):
             return {
                 "status": "unverifiable",
@@ -920,24 +972,29 @@ class RomAdoptionService:
 
     # ── Target resolution ───────────────────────────────────────────
 
-    def _detail_and_target_io(self, rom_id: int) -> tuple[dict[str, Any], _Target | FolderRefused]:
+    def _detail_and_target_io(self, rom_id: int, candidate_path=None) -> tuple[dict[str, Any], _Target | FolderRefused]:
         """The ROM's server detail and the path its content occupies. Blocking: both may read RomM."""
         rom_detail = self._romm_api.get_rom(rom_id)
-        return rom_detail, self._resolve_target(rom_detail)
+        return rom_detail, self._resolve_target(rom_detail, candidate_path)
 
     def _download_system(self, rom_detail: dict[str, Any]) -> str | FolderRefused:
         """The system a download of this ROM lands under in RetroDECK, or the download's refusal where it has none."""
         platform = self._platform_systems.platform_system(rom_detail.get("platform_slug", ""), source=RETRODECK)
         return platform.taken or platform.refusal(GAME_DOWNLOAD)
 
-    def _resolve_target(self, rom_detail: dict[str, Any]) -> _Target | FolderRefused:
+    def _resolve_target(self, rom_detail: dict[str, Any], candidate_path=None) -> _Target | FolderRefused:
         """Resolve the path this ROM's content occupies, or why RetroDECK names no folder for it.
 
         Mirrors the download's own derivation: the platform folder is the one a
         download lands in, the server-supplied name is coerced to a single safe
-        component, and a multi-file ROM is named by its ROM identity rather than
-        by ``files[0]``. A multi-file ROM's path is its directory; a single-file
-        ROM's is the file itself.
+        component, and a ROM served as a folder is named by its ROM identity
+        rather than by ``files[0]``. A folder's path is its directory; a file's
+        is the file itself.
+
+        A single zip that may be unpacked is served as both (``served_shapes``),
+        and the content decides which one this is: *candidate_path* when the
+        user picked an entry, else whatever sits at the zip's own path, else at
+        the folder's. Nothing at either is the file.
         """
         system = self._download_system(rom_detail)
         if isinstance(system, FolderRefused):
@@ -947,15 +1004,33 @@ class RomAdoptionService:
             return folder
         roms_dir = folder
         fallback = synthetic_rom_name(rom_detail)
-        if is_multi_file_download(rom_detail):
-            name, _changed = coerce_safe_component(resolve_extract_dir_name(rom_detail), fallback)
-            return _Target(path=os.path.join(roms_dir, name), system=system, is_multi=True, manifest_name=name)
+        shapes = served_shapes(rom_detail)
+        dir_name, _changed = coerce_safe_component(resolve_extract_dir_name(rom_detail), fallback)
+        dir_target = _Target(
+            path=os.path.join(roms_dir, dir_name), system=system, is_multi=True, manifest_name=dir_name
+        )
+        if FILE not in shapes:
+            return dir_target
         local_name, _missing = resolve_local_file_name(rom_detail)
         name, _changed = coerce_safe_component(local_name, fallback)
         manifest = server_manifest(rom_detail)
-        return _Target(
+        file_target = _Target(
             path=os.path.join(roms_dir, name),
             system=system,
             is_multi=False,
             manifest_name=manifest[0].name if manifest else name,
         )
+        if DIR not in shapes:
+            return file_target
+        return dir_target if self._content_kind(candidate_path, file_target, dir_target) == DIR else file_target
+
+    def _content_kind(self, candidate_path, file_target: _Target, dir_target: _Target) -> Kind | None:
+        """The kind of the content an adoption of a ROM served in both shapes is about."""
+        if candidate_path:
+            existing = self._download_file_store.describe_path(os.path.normpath(str(candidate_path)))
+            return None if existing is None else existing["kind"]
+        for target in (file_target, dir_target):
+            existing = self._download_file_store.describe_path(target.path)
+            if existing is not None:
+                return existing["kind"]
+        return None

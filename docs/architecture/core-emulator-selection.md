@@ -424,7 +424,7 @@ emulator** through the same `ActiveCoreResolver.active_emulator_for_rom` seam an
 | Bake site                                            | When it runs                             | How it resolves the emulator                                                             |
 | ---------------------------------------------------- | ---------------------------------------- | ---------------------------------------------------------------------------------------- |
 | `ShortcutLaunchResolver` → `do_build_core_overrides` | every sync (preview + apply)             | each ROM through `active_emulator_for_rom` → `{rom_id: EmulatorInvocation}` for the bake |
-| `DownloadService` → `_resolve_bound_app_id`          | on download-complete (install/reinstall) | the ROM through `active_emulator_for_rom` in the same flow                               |
+| `RomInstallRecorder` → `do_resolve_launch_bake`      | on download-complete (install/reinstall) | the ROM through `active_emulator_for_rom` in the same flow                               |
 | `MigrationService` → `_build_relaunch_items`         | on RetroDECK-home migration              | each relocated ROM through `active_emulator_for_rom`                                     |
 
 The download-complete bake is the one that re-applies a pin after reinstall — the exact path `roms` storage was chosen
@@ -467,10 +467,11 @@ basename re-resolves to the same disc whenever it is present and cleanly registe
 
 Enumerating a ROM's discs needs two different facts kept separate:
 
-- **Disc identity is format-semantic and hardcoded** — `domain/disc_formats.py` defines
-  `DISC_IMAGE_EXTENSIONS = {.cue, .chd, .iso}`, the irreducible set of launchable disc-image containers. A `.bin` is a
-  **sidecar** (owned by its `.cue`, never launched directly) and an `.m3u` is a **playlist**; both are excluded simply
-  by not being in the set. The disc unit is the `.cue`/`.chd`/`.iso` itself, never the `.bin`.
+- **Disc identity is format-semantic and hardcoded** — `domain/disc_formats.py` defines `DISC_IMAGE_EXTENSIONS`, the
+  irreducible set of launchable disc-image containers: the single-file images and the descriptors of a multi-track set,
+  listed in GLOSSARY.md → Disc. A track file (`.bin`, `.raw`, `.img`, `.sub`, `.mdf`) is a **sidecar** (owned by its
+  descriptor, never launched directly) and an `.m3u` is a **playlist**; both are excluded simply by not being in the
+  set. The disc unit is the image or the descriptor itself, never a track.
 - **The per-system accept-list is a capability and read live** —
   `AtlasCatalogueAdapter.get_supported_extensions(system)` (`adapters/atlas_catalogue.py`) returns the system's
   es_systems `<extension>` set, lowercased, threaded into the resolver through the `SystemSupportedExtensionsFn`
@@ -554,7 +555,7 @@ resolver yields the **path**, `ActiveCoreResolver` yields the **`EmulatorInvocat
 | Bake site                                                                        | How it resolves the disc path                                                             |
 | -------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
 | `ShortcutLaunchResolver` (`do_scan_installed_paths` / `do_read_installed_paths`) | each installed ROM through `resolve_for_install` → `{rom_id: bake_path}` for the bake     |
-| `DownloadService._resolve_bound_app_id`                                          | the freshly-installed ROM through `resolve_for_install` → re-applies the pin on reinstall |
+| `RomInstallRecorder.do_resolve_launch_bake`                                      | the freshly-installed ROM through `resolve_for_install` → re-applies the pin on reinstall |
 | `MigrationService._build_relaunch_items`                                         | each relocated ROM through `resolve_for_install` against the moved install directory      |
 
 ### The picker use cases

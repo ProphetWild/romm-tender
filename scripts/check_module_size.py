@@ -70,20 +70,9 @@ SCOPE_DIRS = (
     "backend/services",
 )
 
-# Modules that were already over the threshold when this gate landed, each
-# pinned at the size it had that day. Entries come out when the module drops
-# back under the threshold; numbers go down when a refactor banks real slack.
-# A number goes up only where the change adds no code — a rename, a reformat —
-# and only with the reason recorded at the entry below and argued in the PR.
-# Never taken silently: a number raised without that reasoning has retired the
-# gate, and that costs more than any module's size.
-ALLOWLIST = {
-    # Lowered 1119 → 1059 (#1171): the download and extract progress callbacks
-    # became one phase-parameterised factory. Lowered 1059 → 1056 (#2041): the
-    # start-up tmp cleanup left for its own service, which made room for the
-    # start and resume use cases to check their own conflict rules.
-    "backend/services/downloads.py": 1056,
-}
+# Nothing is ever added: a module that crosses the threshold is split, never
+# listed. The empty list stays so the checks against it keep their meaning.
+ALLOWLIST: dict[str, int] = {}
 
 
 def in_scope() -> list[pathlib.Path]:

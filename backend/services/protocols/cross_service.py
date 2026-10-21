@@ -141,6 +141,14 @@ class DownloadTargetGateFn(Protocol):
     decision already taken, and the file the user declined must not refuse the
     transfer they started.
 
+    *folder_path* is the second path a download claims when the ROM is served
+    in both shapes (``domain/served_shape.py``) — a single zip that may be
+    unpacked claims the file it arrives as at *checked_path* and the folder it
+    would become here — and ``None`` otherwise. *confirmed_paths* lists each
+    path whose dialog the user answered with replace. Which occupied paths
+    *replace* covers — and so which are refused with ``TargetOccupied`` instead —
+    is ``replace_covers``'s (``domain/served_shape.py``).
+
     *page_saw_candidate* is not an answer but a report — what the game page told
     the user before they pressed. The search's last check is a backstop over it,
     which is what makes the button's promise keepable: the page and the search
@@ -163,6 +171,8 @@ class DownloadTargetGateFn(Protocol):
         candidate_path: str | None = None,
         collision_choice: str | None = None,
         page_saw_candidate: bool = False,
+        folder_path: str | None = None,
+        confirmed_paths: list[str] | None = None,
     ) -> PartialFailure | None: ...
 
 

@@ -985,3 +985,134 @@ class TestProtocolMethodCount:
         # All listed methods are implemented on the concrete adapter.
         for name in method_names:
             assert hasattr(DownloadFileAdapter(), name), f"missing {name}"
+
+
+class TestAMemberWithABadChecksum:
+    """``zipfile`` checks each member's CRC-32 as it is read to its end, and the extraction lets that through."""
+
+    def test_the_extraction_raises(self, tmp_path):
+        archive = tmp_path / "Game.zip"
+        with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_STORED) as zf:
+            zf.writestr("Game.cue", b"FILE")
+            zf.writestr("Game.bin", b"ABCD" * 64)
+        archive.write_bytes(archive.read_bytes().replace(b"ABCDABCD", b"ABCEABCD", 1))
+        dest = tmp_path / "out"
+        dest.mkdir()
+        adapter, paths = DownloadFileAdapter(), (str(archive), str(dest), str(tmp_path))
+
+        with pytest.raises(zipfile.BadZipFile, match="Bad CRC-32"):
+            adapter.extract_zip(*paths)
+
+    def test_its_central_directory_still_lists_it(self, tmp_path):
+        # Which is why the unpack decides on the listing and only the read finds the damage.
+        archive = tmp_path / "Game.zip"
+        with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_STORED) as zf:
+            zf.writestr("Game.bin", b"ABCD" * 64)
+        archive.write_bytes(archive.read_bytes().replace(b"ABCDABCD", b"ABCEABCD", 1))
+
+        members = DownloadFileAdapter().list_archive_members(str(archive))
+
+        assert members is not None
+        assert [m["name"] for m in members] == ["Game.bin"]
+
+
+class TestExtractingWithoutTheWrapperFolder:
+    """``strip_prefix`` leaves the one folder a zip wraps everything in out of every placed path (#910)."""
+
+    def test_the_content_lands_at_the_top(self, tmp_path):
+        archive = tmp_path / "Game.zip"
+        with zipfile.ZipFile(archive, "w") as zf:
+            zf.writestr("Game/", b"")
+            zf.writestr("Game/Game.cue", b"FILE")
+            zf.writestr("Game/tracks/Game.bin", b"\x01" * 16)
+        dest = tmp_path / "out"
+        dest.mkdir()
+
+        DownloadFileAdapter().extract_zip(str(archive), str(dest), str(tmp_path), strip_prefix="Game/")
+
+        assert sorted(p.relative_to(dest).as_posix() for p in dest.rglob("*")) == [
+            "Game.cue",
+            "tracks",
+            "tracks/Game.bin",
+        ]
+
+    def test_the_slip_check_judges_the_stripped_name(self, tmp_path):
+        archive = tmp_path / "Game.zip"
+        with zipfile.ZipFile(archive, "w") as zf:
+            zf.writestr("Game/Game.cue", b"FILE")
+            zf.writestr("Game/../evil.txt", b"x")
+        dest = tmp_path / "out"
+        dest.mkdir()
+        adapter, paths = DownloadFileAdapter(), (str(archive), str(dest), str(tmp_path))
+
+        with pytest.raises(ValueError, match="outside target directory"):
+            adapter.extract_zip(*paths, strip_prefix="Game/")
+
+        assert not (tmp_path / "evil.txt").exists()
+        assert list(dest.iterdir()) == []
+
+    def test_a_wrapper_entry_named_with_a_backslash_places_nothing(self, tmp_path):
+        # zipfile reads only a trailing "/" as a directory, so "Game\\" is a file entry here.
+        archive = tmp_path / "Game.zip"
+        with zipfile.ZipFile(archive, "w") as zf:
+            zf.writestr(zipfile.ZipInfo("Game\\"), b"")
+            zf.writestr(zipfile.ZipInfo("Game\\Game.cue"), b"FILE")
+        dest = tmp_path / "out"
+        dest.mkdir()
+
+        DownloadFileAdapter().extract_zip(str(archive), str(dest), str(tmp_path), strip_prefix="Game\\")
+
+        assert [p.name for p in dest.iterdir()] == ["Game.cue"]
+
+    def test_a_doubled_separator_after_the_wrapper_still_lands_at_the_top(self, tmp_path):
+        archive = tmp_path / "Game.zip"
+        with zipfile.ZipFile(archive, "w") as zf:
+            zf.writestr("Game//Game.bin", b"\x01" * 16)
+        dest = tmp_path / "out"
+        dest.mkdir()
+
+        DownloadFileAdapter().extract_zip(str(archive), str(dest), str(tmp_path), strip_prefix="Game/")
+
+        assert (dest / "Game.bin").read_bytes() == b"\x01" * 16
+
+    def test_an_ignored_top_folder_is_not_unpacked(self, tmp_path):
+        archive = tmp_path / "Game.zip"
+        with zipfile.ZipFile(archive, "w") as zf:
+            zf.writestr("Game/Game.cue", b"FILE")
+            zf.writestr("__MACOSX/Game/._Game.cue", b"fork")
+        dest = tmp_path / "out"
+        dest.mkdir()
+
+        DownloadFileAdapter().extract_zip(str(archive), str(dest), str(tmp_path), strip_prefix="Game/", single_zip=True)
+
+        assert [p.name for p in dest.iterdir()] == ["Game.cue"]
+
+    def test_a_multi_file_zip_places_every_name_as_it_is(self, tmp_path):
+        archive = tmp_path / "Game.zip"
+        with zipfile.ZipFile(archive, "w") as zf:
+            zf.writestr("Game/Game.cue", b"FILE")
+            zf.writestr("__MACOSX/Game/._Game.cue", b"fork")
+        dest = tmp_path / "out"
+        dest.mkdir()
+
+        DownloadFileAdapter().extract_zip(str(archive), str(dest), str(tmp_path))
+
+        assert sorted(p.relative_to(dest).as_posix() for p in dest.rglob("*") if p.is_file()) == [
+            "Game/Game.cue",
+            "__MACOSX/Game/._Game.cue",
+        ]
+
+    @pytest.mark.parametrize("prefix", ["Game/", ""], ids=["wrapped", "flat"])
+    def test_a_single_zip_keeps_a_slash_folder_and_drops_a_backslash_entry(self, tmp_path, prefix):
+        archive = tmp_path / "Game.zip"
+        with zipfile.ZipFile(archive, "w") as zf:
+            zf.writestr(f"{prefix}Game.cue", b"FILE")
+            zf.writestr(f"{prefix}saves/", b"")
+            zf.writestr(zipfile.ZipInfo(f"{prefix}Extras\\"), b"")
+        dest = tmp_path / "out"
+        dest.mkdir()
+
+        DownloadFileAdapter().extract_zip(str(archive), str(dest), str(tmp_path), strip_prefix=prefix, single_zip=True)
+
+        assert sorted(p.name for p in dest.iterdir()) == ["Game.cue", "saves"]
+        assert (dest / "saves").is_dir()

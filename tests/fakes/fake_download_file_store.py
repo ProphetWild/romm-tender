@@ -11,6 +11,7 @@ import zlib
 from typing import TYPE_CHECKING
 
 from domain.rom_candidates import DIR, FILE, LINK, Kind
+from domain.served_shape import unpacked_name
 from lib.path_safety import safe_path_component
 
 if TYPE_CHECKING:
@@ -324,6 +325,8 @@ class FakeDownloadFileStore:
         dest_dir: str,
         safe_root: str,
         progress_callback: Callable[[int, int], None] | None = None,
+        strip_prefix: str = "",
+        single_zip: bool = False,
     ) -> None:
         self.extract_calls.append((archive_path, dest_dir, safe_root))
         if archive_path not in self.files:
@@ -340,7 +343,10 @@ class FakeDownloadFileStore:
         total = sum(len(data) for data in members.values())
         extracted = 0
         for name, data in members.items():
-            full = os.path.join(dest_dir, name)
+            placed = unpacked_name(name, strip_prefix, single_zip=single_zip)
+            if not placed:
+                continue
+            full = os.path.join(dest_dir, placed)
             self.files[full] = data
             extracted += len(data)
             if progress_callback is not None:
