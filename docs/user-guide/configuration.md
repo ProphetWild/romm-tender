@@ -15,15 +15,16 @@ right. Move onto a section in the list and the right-hand side changes at once �
 | **Controller**       | Steam Input Mode and Apply to All Shortcuts                                                                                                                                |
 | **Steam Library**    | preferred region, collection games in platform groups, collection types in Steam names                                                                                     |
 | **Emulator sources** | every emulator setup Tender found — RetroDECK, EmuDeck, a RetroArch of its own — as a numbered card with its health, **Use this source**, and arrows to move it up or down |
+| **Tender folder**    | where Tender keeps its own files: the current place, the internal storage, each writable drive with its free space, and **Another folder…**                                |
 | **Updates**          | the version you have and the release the last successful check found, an update that was rolled back or refused, the daily update check, and **Check now**                 |
 | **Interface**        | whether Tender's Quick Access entry sits above or below Decky Loader's                                                                                                     |
 | **Advanced**         | log level                                                                                                                                                                  |
 
 If you used an earlier version, everything is still here — the eight blocks the panel used to stack are grouped into
-five of the eight sections; **Emulator sources**, **Updates** and **Interface** are new. Registered Devices is now
-inside **Save Sync**, the SteamGridDB key is inside **Connections**, and the section that used to be called **Library**
-is now **Steam Library**: the Library _page_ is about what gets synced out of RomM, this section is about how it looks
-once it is in Steam.
+five of the nine sections; **Emulator sources**, **Tender folder**, **Updates** and **Interface** are new. Registered
+Devices is now inside **Save Sync**, the SteamGridDB key is inside **Connections**, and the section that used to be
+called **Library** is now **Steam Library**: the Library _page_ is about what gets synced out of RomM, this section is
+about how it looks once it is in Steam.
 
 **Signing in to RetroAchievements is not here yet.** When it arrives it will live under Connections, with the other
 accounts.
@@ -347,6 +348,44 @@ its settings file _file_ holds no version Tender can read; its folders are still
 a source you switched off. Where Tender cannot get an emulator list, the platform page, the emulator menu and a game's
 BIOS tab say why — no source found, every source switched off, a broken systems file, a RetroDECK that has not been set
 up yet, a list that cannot be read yet — rather than showing an empty list.
+
+## Tender folder
+
+Tender keeps its own files in one folder, `Tender/` — today the recovery bundles a cleanup seals. It lies in `~/Tender`
+until you choose another place here. The line at the top names the place in use — **In use: Internal storage**, **In
+use: SD card · Emulation**, or **In use: Another folder** — with its state, **Reachable**, or why the folder cannot be
+used: **Not connected**, **Missing** or **Not writable**; the folder itself is under it.
+
+Below it, one tile per place, two to a row; the tile of the place in use is outlined and marked **In use**, and pressing
+it does nothing.
+
+- **Internal storage**, tagged **Default**, puts the folder back in your home folder, `~/Tender`.
+- Each writable drive mounted under `/run/media/<user>/` gets a tile headed by its kind — **SD card**, **USB drive**, or
+  **Drive** for any other — and tagged with its name, and puts the folder at that drive's root. Tender tells the kind
+  from the device behind the mount, and keeps the kind and name with your choice. With no drive connected, a line says
+  to insert an SD card or connect a drive.
+- Every tile shows the folder it would use and, at its foot, the space free there.
+- When the place in use is a drive that is not connected, its tile stays, greyed and outlined, with **Not connected** in
+  place of the free space, and the line at the top still names it by the kind and name kept with your choice.
+- **Another folder…**, with the line "Type a path, for example a folder on one of the drives above", opens one window
+  that stays open until a place is accepted. Its text field opens empty, with an example under it, and takes a path you
+  type, starting with `/` or `~`; Tender puts its folder `Tender/` inside it. After OK, a refusal is shown under the
+  field with your text kept for correcting. Where the last folder you typed is itself named Tender, the window asks
+  whether you meant the folder above it, and where folders of the path do not exist yet it names them and asks before
+  creating them — both questions in the same window, with their own buttons. Changing the text drops a shown question or
+  refusal. A path on a drive that is not connected is refused. An accepted place closes the window; Cancel closes it
+  with nothing chosen.
+
+A place whose `Tender/` would be the folder in use is answered as already Tender's folder, and so is a typed path that
+names the folder in use itself, such as `~/Tender` while it lies there; one whose `Tender/` would lie inside the folder
+in use, or hold it, is refused — all before any question.
+
+A place is refused where `Tender/` would lie inside an emulator source's ROM folder or inside the folder a source keeps
+a system's games in — also where that folder is a link to another drive — or would hold a ROM folder. So is a place
+Tender cannot write to, and a place you choose while Tender cannot read the emulator sources or a source cannot name its
+folders; the internal storage is never checked. Choosing a place switches where Tender keeps its files from then on;
+what lies in the old folder stays there. [Where your data lives](where-your-data-lives.md#tenders-folder) has the rest,
+including what Main says when the folder cannot be reached.
 
 ## Tender's place in the Quick Access Menu
 

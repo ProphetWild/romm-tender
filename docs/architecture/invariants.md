@@ -223,6 +223,28 @@ Format: **invariant** — tier — enforced by.
   same class, parses `bootstrap/adapters.py` and fails unless `DB_FILENAME` is a string literal, so
   `f"{PACKAGE_NAME}.db"`, which reproduces today's value exactly, fails too. The rule is also stated at `APP_DIR_NAME`
   and at `DB_FILENAME` themselves, because a diff that folds either opens neither the docstring nor this file
+- **Tender's folder is unreachable only while a store has recorded something under it; only its owner creates it, with
+  its id file; and every write into it is made ready through `TenderFolderService.do_prepare_for_write`** — test +
+  prompt-only — the folder (`domain/tender_folder.py`, `services/tender_folder.py`) lies on a drive that can be taken
+  out, and the two ways of being wrong about that cost differently. Calling a folder with nothing recorded under it
+  unreachable would put a notice on Main and pause work for a drive the user has simply not inserted yet, so the
+  condition counts only where a store answers that it recorded something there (`TenderFolderRecordReader`); with
+  nothing recorded, a missing folder is created again by the next write. Writing into a place without asking would land
+  on the internal drive under an empty mount folder, or fail half-way, so every write goes through
+  `do_prepare_for_write`, which creates a missing folder only where nothing is recorded under it and refuses
+  `folder_unreachable` where the drive is gone (told by the stored mount point) or the folder cannot be written.
+  Creating the folder is the owner's alone because the owner writes `.tender-folder` into `Tender/` whenever it creates
+  it, holding the id it keeps in `kv_config`: the recovery bundle adapter opens the folder it is handed and never
+  creates it (`tests/adapters/test_recovery_bundle.py::test_a_seal_never_creates_tenders_folder`), and the cleanup asks
+  the owner before each seal
+  (`tests/services/prune/test_service.py::test_a_bundle_on_a_folder_that_cannot_be_reached_fails_its_group_with_the_reason`).
+  `tests/services/test_tender_folder.py` pins the rest: `TestTheState` (unreachable only with records, for each of the
+  three conditions), `TestCreatingTheFolder` (start, id file, a drive that is gone, a recorded folder),
+  `TestPreparingAWrite` and `TestTheFolderRule`. Prompt-only: no store records anything under the folder yet, so a new
+  store that writes there must call `do_prepare_for_write` first, answer `TenderFolderRecordReader` and join the
+  `records` tuple in `bootstrap/services.py`, and a use case that touches the folder's files names the folder rule
+  (`folder=True`); a recovery bundle is never a record — Tender lists bundles from the folder and keeps no record of
+  them
 - **No name in the code calls Tender a plugin; a third-party name that must keep the word is excepted by name, whole,
   with its reason** — check — Tender stopped being a Decky Loader plugin when the backend began hosting itself, and a
   name that still says "plugin" teaches its reader the old model: that something loads Tender and owns its life cycle,
@@ -1640,6 +1662,34 @@ Format: **invariant** — tier — enforced by.
   has to check the state itself, as `services/saves/save_directory.py::_followable_directory` does — a new mover that
   does not carries files into a place the emulator's settings never named, and nothing would say so. Detail:
   `docs/architecture/save-sync-coverage.md`, GLOSSARY.md → Save state / Save scope
+- **A save place whose directory still holds a resolver template (`<cwd>`, `<region>`, `<save_id>`) is never followed,
+  recorded, renamed into or used as a save-state place** — test + prompt-only — the resolver answers a place it cannot
+  complete as a template and lists the holes in `needs`: a RetroArch save folder set as a relative path answers
+  `<cwd>/…`, below the folder a game is started from, which Tender names it no value for (#2385 D20); Dolphin's GameCube
+  cards answer `…/<region>/Card A`; a Wii or Cemu title answers `…/<save_id>/…`. Such a string names no folder. Carried
+  into, it is a literal `<region>` folder or a path relative to the backend's own working directory, and the upgrade to
+  emu-atlas 0.25.0 made that reachable for real files: a relative save folder that 0.24.0 answered as the platform
+  default — recorded as such — answers `<cwd>/saves` after it, and a follow that took the new answer would move the
+  game's saves into a folder below wherever the backend happens to run. The rule spans three files:
+  `SaveAnswer.concrete_directory` (`domain/save_answer.py`) is `None` wherever a hole in `needs` appears in the
+  directory as `<hole>`, `_followable_directory` (`services/saves/save_directory.py`) reads it for the follow and both
+  records, the rename on adoption's `_save_dir` (`services/rom_adoption/renamer.py`) reads it, and
+  `resolve_savestate_location` (`adapters/atlas_saves.py`) answers `None` — nothing established — while the savestate
+  placement's `needs` is not empty. A hole in a file name alone leaves the directory a folder (Flycast's cards).
+  Enforced by `tests/services/saves/test_save_directory.py::TestNeverIntoAPlaceWithAHole` (the upgrade case: a concrete
+  record, a `<cwd>/saves` answer, the file left where it is, no folder created, the record unchanged; a region-keyed
+  folder; a first sight that records nothing),
+  `tests/services/test_rom_adoption.py::TestAdoptCandidate::test_a_save_directory_with_a_hole_still_in_it_carries_no_save`,
+  and in `tests/adapters/test_atlas_saves.py` `TestWhatTheAnswerCarries`' hole cases,
+  `TestTheSavestateQuestion::test_a_place_with_a_hole_still_in_it_establishes_nothing` and
+  `TestTheVocabularyIsTheResolversOwn::test_the_start_folder_hole_and_how_the_resolver_spells_a_hole_in_a_path`, which
+  holds the `<hole>` spelling to the resolver's own template constants. Unseen by them: a new mover or recorder that
+  reads `SaveAnswer.directory` instead of `concrete_directory` — the field stays the resolver's answer, because the
+  status read shows it — a savestate place taken from anywhere but that adapter, and a template the resolver spells
+  other than `<hole>`, or one whose hole `needs` does not list. Prompt-only: a new mover or recorder of save files reads
+  `concrete_directory`, and a new reader of a savestate place goes through `resolve_savestate_location`, so the guard
+  holds at it without a test of its own. Detail: `docs/architecture/save-sync-coverage.md`, "Nor is it always the
+  game's"
 - **Per-slot server reads/deletes go through `domain/save_slot.py` (legacy omits `&slot=`, client-filters)** —
   prompt-only — `get_slot_saves` / `get_slot_delete_info` / `delete_slot` / `list_file_versions` / `rollback_to_version`
   use `slot_query_param` + `save_in_slot`; RomM can't address `slot:null` via the param, so legacy MUST omit it + filter
@@ -1764,29 +1814,30 @@ Format: **invariant** — tier — enforced by.
 - **Every row a reader must be able to reach on a QAM page is a row Steam can focus — a toggle, a button, or a
   `Focusable` declaring a stop of its own, including a table row with no action of its own, so the reader can walk the
   table; text between two stops of the same card is reached through them and is no stop of its own (an emulator source
-  card's folder and health lines, between its arrows and its switch)** — check + prompt-only —
-  `tender/qam-focusable-row` checks the narrow syntactic slice where an `@decky/ui` `Focusable` in the QAM module map
-  has no nav-stop prop, static focusable descendant, opaque child, or unknown spread; focus order, runtime reachability,
-  edge revelation, scrolling geometry, and controller behaviour remain prompt-only. The frontend suite cannot see those
-  runtime properties: happy-dom has no nav tree, so a page whose rows are unreachable renders exactly like one whose
-  rows are not, and a mouse-driven dev loop never meets the problem either. A region scrolls only by moving focus —
-  Steam's plain `ScrollPanel` binds no gamepad direction — so an unreachable row is also an unscrollable one, and
-  everything below the fold is simply out of reach with a controller. The trap is that a bare `Focusable` is a container
-  rather than a focus stop: Steam's navigation asks the nav node the panel renders (`GetFocusable()`), which finds no
-  stop on a row declaring none of the four options it reads — nor on one whose `onActivate`/`onOKButton` would have
-  promoted it, since that promotion is skipped where an option was supplied — all stated in full at
-  `docs/architecture/qam-panel.md`, which owns that mechanism. **What the check cannot see it says nothing about**, and
-  three shapes matter. One opaque child anywhere among a row's children passes the whole row, which is how the
-  removed-games cleanup's details region stood unreachable in the one release that has shipped with this gate green — a
-  `Focusable` of plain text, fixed by declaring a nav option on it and not by the rule. A descendant the BROWSER can
-  focus — a `tabIndex`, a `button` — is taken as an escape, so a row reachable with a mouse and not with a stick passes.
-  And a row whose own `tabIndex` is its only affordance is reported rather than accepted, because that attribute reaches
-  the rendered element and not the node. The rule spans every page the wide frame will host, and the frame cannot carry
-  it: it holds a page's content as opaque nodes, never as rows it could check. **What the frame DOES carry is the
-  content outside a region's focusable rows, at both ends** — a heading, a counts line or a column header above the
-  first, a legend or a total below the last, each unreachable for the same reason and with no neighbour to ride along
-  with — so `ScrollRegion` scrolls itself to the top when focus reaches the first stop in it and to its end when focus
-  reaches the last (`revealEdge`, over `revealTop` and `revealBottom`). Both halves are pinned by
+  card's folder and health lines, between its arrows and its switch), and so is a line above the first stop of a
+  `ScrollRegion`, which the region brings into view when focus reaches that stop (the Tender folder section's status
+  line)** — check + prompt-only — `tender/qam-focusable-row` checks the narrow syntactic slice where an `@decky/ui`
+  `Focusable` in the QAM module map has no nav-stop prop, static focusable descendant, opaque child, or unknown spread;
+  focus order, runtime reachability, edge revelation, scrolling geometry, and controller behaviour remain prompt-only.
+  The frontend suite cannot see those runtime properties: happy-dom has no nav tree, so a page whose rows are
+  unreachable renders exactly like one whose rows are not, and a mouse-driven dev loop never meets the problem either. A
+  region scrolls only by moving focus — Steam's plain `ScrollPanel` binds no gamepad direction — so an unreachable row
+  is also an unscrollable one, and everything below the fold is simply out of reach with a controller. The trap is that
+  a bare `Focusable` is a container rather than a focus stop: Steam's navigation asks the nav node the panel renders
+  (`GetFocusable()`), which finds no stop on a row declaring none of the four options it reads — nor on one whose
+  `onActivate`/`onOKButton` would have promoted it, since that promotion is skipped where an option was supplied — all
+  stated in full at `docs/architecture/qam-panel.md`, which owns that mechanism. **What the check cannot see it says
+  nothing about**, and three shapes matter. One opaque child anywhere among a row's children passes the whole row, which
+  is how the removed-games cleanup's details region stood unreachable in the one release that has shipped with this gate
+  green — a `Focusable` of plain text, fixed by declaring a nav option on it and not by the rule. A descendant the
+  BROWSER can focus — a `tabIndex`, a `button` — is taken as an escape, so a row reachable with a mouse and not with a
+  stick passes. And a row whose own `tabIndex` is its only affordance is reported rather than accepted, because that
+  attribute reaches the rendered element and not the node. The rule spans every page the wide frame will host, and the
+  frame cannot carry it: it holds a page's content as opaque nodes, never as rows it could check. **What the frame DOES
+  carry is the content outside a region's focusable rows, at both ends** — a heading, a counts line or a column header
+  above the first, a legend or a total below the last, each unreachable for the same reason and with no neighbour to
+  ride along with — so `ScrollRegion` scrolls itself to the top when focus reaches the first stop in it and to its end
+  when focus reaches the last (`revealEdge`, over `revealTop` and `revealBottom`). Both halves are pinned by
   `frontend/src/bigpicture/layout/ScrollRegion.test.tsx` over mocked geometry, so what is tested is the DECISION and not
   the scroll: whether the panel and the reader agree about which element is topmost or last stays device-only, like the
   rest of this entry. **Reachable is not near, and the same mechanism decides where a page puts its controls**: focus

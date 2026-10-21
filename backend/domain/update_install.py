@@ -116,6 +116,7 @@ _CLAIMS_NAMED_BY_A_REASON: Mapping[str, WaitReason] = MappingProxyType(
                 "uninstall_all_roms",
                 "remove_rom",
                 "forget_download",
+                "forget_tender_folder_records",
                 "remove_all_shortcuts",
                 "remove_platform_shortcuts",
                 "reconcile_shortcuts",
@@ -157,6 +158,9 @@ _CLAIMS_NAMED_BY_A_REASON: Mapping[str, WaitReason] = MappingProxyType(
                 "clear_sync_cache",
                 "record_session_start",
                 "reconcile_playtime",
+                # Where Tender's folder lies, written to the settings.
+                "choose_tender_place",
+                "use_recorded_tender_folder",
             ),
             WaitReason.OTHER_WORK,
         ),

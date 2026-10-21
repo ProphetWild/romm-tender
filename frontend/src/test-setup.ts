@@ -169,9 +169,26 @@ vi.mock("@decky/ui", () => {
   // identical, since React was already dropping the rest. Neither shell is ever
   // handed className or style — every caller wraps its own body in a div.
   const modalShell = (props: AnyProps) => createElement("div", null, props.children as never);
+  // Steam's ModalRoot answers its own OK as ValidatingModalShell's
+  // `dialogOKSubmits` describes; a test presses that OK by firing `submit` on
+  // anything inside the modal.
+  const modalRoot = (props: AnyProps & { onOK?: () => unknown; closeModal?: () => void }) =>
+    createElement(
+      "div",
+      {
+        onSubmit: (event: Event) => {
+          event.preventDefault();
+          if (props["bOKDisabled"] === true) return;
+          void Promise.resolve(props.onOK?.()).then(() => {
+            if (props["bCloseAfterOK"] !== false) props.closeModal?.();
+          });
+        },
+      },
+      props.children as never,
+    );
   return {
     ConfirmModal: modalShell,
-    ModalRoot: modalShell,
+    ModalRoot: modalRoot,
     DialogButton: ({
       children,
       onClick,
@@ -324,9 +341,20 @@ vi.mock("@decky/ui", () => {
     },
     PanelSection: passthrough("section"),
     PanelSectionRow: passthrough("div"),
-    TextField: (p: AnyProps & { value?: string; onChange?: (e: unknown) => void; onKeyDown?: (e: unknown) => void }) =>
+    TextField: (
+      p: AnyProps & {
+        value?: string;
+        label?: unknown;
+        description?: unknown;
+        onChange?: (e: unknown) => void;
+        onKeyDown?: (e: unknown) => void;
+      },
+    ) =>
       createElement("input", {
         "data-testid": "text-field",
+        // A string label and description, for a test to read what the field says.
+        "data-label": typeof p.label === "string" ? p.label : undefined,
+        "data-description": typeof p.description === "string" ? p.description : undefined,
         value: p.value ?? "",
         onChange: (e: unknown) => p.onChange?.(e),
         onKeyDown: (e: unknown) => p.onKeyDown?.(e),

@@ -229,13 +229,12 @@ locally with `mise run docs`.
   UA with 403, and GitHub's API refuses a request with no UA at all. The three adapters that talk to a server off this
   machine (`adapters/romm/http.py`, `adapters/steamgriddb.py`, `adapters/github_releases.py`) take a `user_agent: str`
   ctor param; bootstrap threads `<package name>/<version>`, both halves from `domain/identity.py` — no hardcoded name
-  and no hardcoded version at the format site, so the UA and the recovery root come from that one module rather than
-  from two literals that could drift (the root additionally through `sanitize_package_name`, which is the identity for a
-  name shaped like this one). Those two are everything `PACKAGE_NAME` reaches; the folder the program ships as is not
-  decided by it. **The UA has no fallback and no failure mode**: both halves are constants, so a UA naming anything but
-  this program is a code change, never a deployment accident. `VERSION` is machine-stamped by release-please
-  (`x-release-please-version` on its line) and never edited by hand. `adapters/renderer_gc.py` also speaks HTTP — to
-  Steam's debugger on `localhost` — and takes none.
+  and no hardcoded version at the format site, so the UA comes from that one module rather than from two literals that
+  could drift. The UA is everything `PACKAGE_NAME` reaches; neither the folder the program ships as nor the recovery
+  bundles' root (`recovery/` inside Tender's folder) is decided by it. **The UA has no fallback and no failure mode**:
+  both halves are constants, so a UA naming anything but this program is a code change, never a deployment accident.
+  `VERSION` is machine-stamped by release-please (`x-release-please-version` on its line) and never edited by hand.
+  `adapters/renderer_gc.py` also speaks HTTP — to Steam's debugger on `localhost` — and takes none.
 - **Large payloads**: two caps, and they fail differently — `host/dispatch.py` refuses an encoded answer over ~12 MiB as
   an ordinary error for that one call, while `host/connection.py` closes the socket on a frame over 16 MiB, which
   rejects every call in flight with it. So a bulk payload is chunked rather than sent: per-item endpoints, and bulk
@@ -491,6 +490,18 @@ entry — why the rule exists, what breaks without it, and where it lives — is
   `DB_FILENAME` to be string literals (a transform over `PACKAGE_NAME` fails too); the reverse fold through an aliased
   import and the third home, the frontend's `SESSION_BREADCRUMB_KEY`, are prompt-only. The four homes are listed in
   `backend/domain/identity.py`'s module docstring
+- **Tender's folder is unreachable only while a store has recorded something under it; only its owner,
+  `services/tender_folder.py`, creates it, writing its `.tender-folder` id file into `Tender/` whenever it creates it;
+  and every write into it is made ready through `TenderFolderService.do_prepare_for_write`, which refuses
+  `folder_unreachable` where the drive is gone, the folder cannot be written, or it is missing while something is
+  recorded under it** — test + prompt-only — `tests/services/test_tender_folder.py` (`TestTheState`,
+  `TestCreatingTheFolder`, `TestPreparingAWrite`, `TestTheFolderRule`),
+  `tests/domain/test_tender_folder.py::TestReachability`,
+  `tests/adapters/test_recovery_bundle.py::test_a_seal_never_creates_tenders_folder` and
+  `tests/services/prune/test_service.py::test_a_bundle_on_a_folder_that_cannot_be_reached_fails_its_group_with_the_reason`.
+  Prompt-only: a new store that writes into the folder calls `do_prepare_for_write` first, answers
+  `TenderFolderRecordReader` and joins the `records` tuple in `bootstrap/services.py`; a use case that touches the
+  folder's files names the folder rule (`folder=True`); no store counts a recovery bundle as a record
 - **No name in the code calls Tender a plugin; a third-party name that must keep the word is excepted by name, whole,
   with its reason** — check — `frontend/eslint.config.js` (`no-restricted-syntax` over every identifier in every file
   ESLint lints, tests and config files included; exceptions `NAMES_NOT_ABOUT_TENDER`), kept live by
@@ -1017,6 +1028,20 @@ entry — why the rule exists, what breaks without it, and where it lives — is
   `._uninstalled_answer` and `services/rom_adoption/renamer.py`; nothing caches an answer; a refusal for a place not
   read keeps the resolver's directory for the rename on adoption, so anything else that moves files by
   `SaveAnswer.directory` checks the state first, as `services/saves/save_directory.py::_followable_directory` does
+- **A save place whose directory still holds a resolver template (`<cwd>`, `<region>`, `<save_id>`) is never followed,
+  recorded, renamed into or used as a save-state place** — test + prompt-only — `SaveAnswer.concrete_directory`
+  (`domain/save_answer.py`) is `None` for such a directory, `_followable_directory` (`services/saves/save_directory.py`)
+  and the rename's `_save_dir` (`services/rom_adoption/renamer.py`) read it, and `resolve_savestate_location`
+  (`adapters/atlas_saves.py`) answers `None` while `needs` is not empty;
+  `tests/services/saves/test_save_directory.py::TestNeverIntoAPlaceWithAHole`,
+  `tests/services/test_rom_adoption.py::TestAdoptCandidate::test_a_save_directory_with_a_hole_still_in_it_carries_no_save`,
+  `tests/adapters/test_atlas_saves.py` (`TestWhatTheAnswerCarries`' hole cases,
+  `TestTheSavestateQuestion::test_a_place_with_a_hole_still_in_it_establishes_nothing`, and
+  `TestTheVocabularyIsTheResolversOwn::test_the_start_folder_hole_and_how_the_resolver_spells_a_hole_in_a_path`). Unseen
+  by them: a new mover or recorder that reads `answer.directory` instead of `concrete_directory`, a savestate place
+  taken from anywhere but that adapter, and a template the resolver spells other than `<hole>` or whose hole `needs`
+  does not list. Prompt-only: a new mover or recorder of save files reads `concrete_directory`, and a new reader of a
+  savestate place goes through `resolve_savestate_location`
 - **Per-slot server reads/deletes go through `domain/save_slot.py` (legacy omits `&slot=`, client-filters)** —
   prompt-only — `get_slot_saves` / `get_slot_delete_info` / `delete_slot` / `list_file_versions` / `rollback_to_version`
   use `slot_query_param` + `save_in_slot`; a legacy delete is refused up-front
@@ -1100,11 +1125,13 @@ entry — why the rule exists, what breaks without it, and where it lives — is
 - **Every row a reader must be able to reach on a QAM page is a row Steam can focus — a toggle, a button, or a
   `Focusable` declaring a stop of its own, including a table row with no action of its own; text between two stops of
   the same card is reached through them and is no stop of its own (an emulator source card's folder and health lines,
-  between its arrows and its switch)** — check + prompt-only — `tender/qam-focusable-row` for the syntactic slice — it
-  passes a row with an unknown spread, any opaque child, or a browser-focusable descendant (`tabIndex`, `button`), so
-  those rows are prompt-only too; prompt-only: focus order, runtime reachability, edge revelation (`ScrollRegion`'s
-  `revealEdge`, whose decision `frontend/src/bigpicture/layout/ScrollRegion.test.tsx` pins), scrolling geometry and
-  controller behaviour, and that a page's controls sit above its long focusable lists, not below
+  between its arrows and its switch), and so is a line above the first stop of a `ScrollRegion`, which the region brings
+  into view when focus reaches that stop (the Tender folder section's status line)** — check + prompt-only —
+  `tender/qam-focusable-row` for the syntactic slice — it passes a row with an unknown spread, any opaque child, or a
+  browser-focusable descendant (`tabIndex`, `button`), so those rows are prompt-only too; prompt-only: focus order,
+  runtime reachability, edge revelation (`ScrollRegion`'s `revealEdge`, whose decision
+  `frontend/src/bigpicture/layout/ScrollRegion.test.tsx` pins), scrolling geometry and controller behaviour, and that a
+  page's controls sit above its long focusable lists, not below
 - **A list-and-detail page opens on the row it was opened WITH, not on its first row** — test + prompt-only —
   `ListDetail.test.tsx` and `WidePage.test.tsx`, each over a non-first row, as any test of it must be, pin the
   `ENTRY_STOP_ATTR` mark a swap places focus by, and the `preferredFocus` on the selected row and on the body that entry

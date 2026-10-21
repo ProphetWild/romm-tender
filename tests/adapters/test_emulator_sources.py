@@ -18,7 +18,17 @@ from _vendor.atlas import (
     HEALTH_ISSUE_ROOT_MISSING,
 )
 from _vendor.atlas import machine as atlas_machine
-from _vendor.atlas.installations import Health, InstallationRoot, RootsAnswer, RootSetting, SystemsAnswer
+from _vendor.atlas.installations import (
+    Health,
+    InstallationRoot,
+    RomLocationsAnswer,
+    RomPlacement,
+    RootProvenance,
+    RootsAnswer,
+    RootSetting,
+    SystemRomPlacement,
+    SystemsAnswer,
+)
 from _vendor.atlas.machine import CORE_READ_TIMED_OUT, CoreReading, RealMachine
 from _vendor.atlas.placement import Caveat
 
@@ -39,12 +49,16 @@ class _Installation:
         systems: SystemsAnswer | Exception | None = None,
         health_raises: Exception | None = None,
         roots: RootsAnswer | None = None,
+        rom_dirs: dict[str, str | None] | None = None,
     ) -> None:
         self.kind = kind
         self._issues = issues
         self._root = root
         self._systems = systems if systems is not None else SystemsAnswer(systems=("gba",))
         self._health_raises = health_raises
+        self._rom_dirs = rom_dirs if rom_dirs is not None else {}
+        # The systems the per-system ROM-folder question was put for.
+        self.asked_one_by_one: list[str] = []
         if roots is not None:
             # Only a source the resolver answers roots for has the question.
             self.roots = lambda: roots
@@ -61,6 +75,20 @@ class _Installation:
         if isinstance(self._systems, Exception):
             raise self._systems
         return self._systems
+
+    def rom_location(self, system: str) -> RomPlacement:
+        self.asked_one_by_one.append(system)
+        return RomPlacement(dir=self._rom_dirs.get(system))
+
+    def rom_locations(self) -> RomLocationsAnswer:
+        listed = self.systems()
+        return RomLocationsAnswer(
+            tuple(
+                SystemRomPlacement(system, RomPlacement(dir=self._rom_dirs.get(system))) for system in listed.systems
+            ),
+            listed.sources,
+            listed.caveats,
+        )
 
 
 class _Detect:
@@ -322,6 +350,75 @@ class TestDescribe:
         assert report.findings == ()
         assert report.catalogue == CATALOGUE_UNAVAILABLE
         assert any("resolver failed on health" in line for line in traces)
+
+
+def _roms_root(path: str, provenance: RootProvenance = "read") -> RootsAnswer:
+    return RootsAnswer((InstallationRoot("roms", path, provenance, RootSetting("/rd.json", "paths.roms_path")),))
+
+
+class TestRomFolders:
+    def test_every_source_answers_its_rom_folder_and_each_system_folder_resolved(self, traces, tmp_path):
+        roms = tmp_path / "roms"
+        (roms / "psx").mkdir(parents=True)
+        elsewhere = tmp_path / "big" / "ps2"
+        elsewhere.mkdir(parents=True)
+        (roms / "ps2").symlink_to(elsewhere)
+        retrodeck = _Installation(
+            "retrodeck",
+            systems=SystemsAnswer(systems=("psx", "ps2", "n64")),
+            roots=_roms_root(str(roms)),
+            rom_dirs={"psx": str(roms / "psx"), "ps2": str(roms / "ps2"), "n64": None},
+        )
+
+        answer = _holder(_Detect(retrodeck), traces).rom_folders()
+
+        assert answer is not None
+        (folders,) = answer
+        assert folders.kind == "retrodeck"
+        assert folders.rom_root == str(roms)
+        assert folders.system_folders == (("psx", str(roms / "psx")), ("ps2", str(elsewhere)))
+
+    def test_each_source_is_asked_for_all_its_system_folders_in_one_question(self, traces):
+        retrodeck = _Installation(
+            "retrodeck",
+            systems=SystemsAnswer(systems=("psx", "ps2")),
+            roots=_roms_root("/roms"),
+            rom_dirs={"psx": "/roms/psx", "ps2": "/roms/ps2"},
+        )
+
+        answer = _holder(_Detect(retrodeck), traces).rom_folders()
+
+        assert answer is not None
+        assert [system for system, _folder in answer[0].system_folders] == ["psx", "ps2"]
+        assert retrodeck.asked_one_by_one == []
+
+    def test_a_switched_off_source_and_an_assumed_rom_folder_count_too(self, traces):
+        emudeck = _Installation("emudeck", roots=_roms_root("/home/deck/Emulation/roms", "assumed"))
+
+        folders = _holder(_Detect(emudeck), traces, settings={"emulator_sources_off": ["emudeck"]}).rom_folders()
+
+        assert folders is not None
+        assert folders[0].rom_root == "/home/deck/Emulation/roms"
+
+    def test_a_source_without_a_roots_question_answers_no_rom_folder(self, traces):
+        bare = _Installation("bare_retroarch_native")
+
+        folders = _holder(_Detect(bare), traces).rom_folders()
+
+        assert folders is not None
+        assert folders[0].rom_root is None
+
+    def test_a_raising_detection_reads_nothing(self, traces):
+        def detect(_home: str, _machine: Any) -> list[Any]:
+            raise RuntimeError("probe failed")
+
+        assert _holder(detect, traces).rom_folders() is None
+
+    def test_a_question_that_raises_reads_nothing(self, traces):
+        broken = _Installation("retrodeck", systems=RuntimeError("catalogue gone"), roots=_roms_root("/roms"))
+
+        assert _holder(_Detect(_Installation("emudeck"), broken), traces).rom_folders() is None
+        assert any("resolver failed on its ROM folders" in line for line in traces)
 
 
 class TestTheCoreProbeRunsOncePerCoreFile:
