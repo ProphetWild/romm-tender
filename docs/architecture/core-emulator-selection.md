@@ -53,10 +53,10 @@ A standalone emulator has **no** libretro `.so`, so the read-path projection rep
 Tender owns two **deviations** from the RetroDECK default core. Each stores only the deviation as a core LABEL; absence
 means "follow the default."
 
-| Scope            | Stored where                                                  | Applies to              | Written by                 |
-| ---------------- | ------------------------------------------------------------- | ----------------------- | -------------------------- |
-| **Per-game**     | Tender's database — `roms.emulator_override` (nullable LABEL) | one ROM (by `rom_id`)   | Tender (`pin`/`clear`)     |
-| **Per-platform** | `settings.json` — `platform_cores` map (`{slug: label}`)      | every ROM on a platform | Tender (`set_system_core`) |
+| Scope            | Stored where                                                  | Applies to              | Written by                                                                                                                     |
+| ---------------- | ------------------------------------------------------------- | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| **Per-game**     | Tender's database — `roms.emulator_override` (nullable LABEL) | one ROM (by `rom_id`)   | Tender (`pin`/`clear`)                                                                                                         |
+| **Per-platform** | `settings.json` — `platform_cores` map (`{slug: label}`)      | every ROM on a platform | Tender (`set_system_core`; the firmware listing's refiling moves an override filed under a server folder name to its platform) |
 
 Both overrides are Tender's own state and live in Tender's own stores. Neither is written into ES-DE's `gamelist.xml` —
 Tender **never writes that file**. It still **reads** the RetroDECK/ES-DE configuration it does not own (the live
@@ -623,6 +623,10 @@ so standalone emulators and disabled un-bakeable entries render identically (#12
    while no shortcut is re-baked: the frontend re-bakes only on success. The write checks no BIOS, so a firmware read
    cannot add a second way to report a stored switch as failed. The platform detail re-reads the platform once the
    re-bake is done, and that read answers for the new core's firmware.
+
+`platform_cores` has one more writer: the firmware listing's refiling (`services/firmware/refiling.py`) moves an
+override stored under a server folder name, before a firmware file's platform came from RomM's `platform_id`, to its
+platform's slug, in the same live dict, and gives the move back when `settings.json` cannot be written.
 
 The frontend confirm-sets each `rebake_items` entry on its live Steam shortcut the same way the per-game flow does, so a
 per-platform core change applies **immediately** to every installed game on the platform — no sync required. Because the

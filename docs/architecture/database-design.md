@@ -776,6 +776,16 @@ SteamGridDB image id the user chose and `chosen_at` in REAL Unix-epoch seconds, 
 ([#2381](https://github.com/danielcopper/romm-tender/issues/2381) D1, D8). Both are created empty and NULL: nothing was
 chosen before the migration. How each is read is [Game page artwork](steam-non-steam-shortcuts.md#game-page-artwork).
 
+`034_clear_firmware_cache_filed_by_folder.sql` (`user_version = 34`) empties `firmware_cache`
+([#2191](https://github.com/danielcopper/romm-tender/issues/2191) D1). The cached rows carried, as their
+`platform_slug`, a folder name read out of a file's path — the segment after `bios/`, or the path's first segment
+otherwise — and a firmware file's platform is now the one RomM states for it (`platform_id`). With the table empty, the
+first listing read after the upgrade asks the server, where a cache row would have answered for up to the cache's hour,
+and after that whenever the server could not be read. The first read that reaches the server also moves
+`downloaded_bios` rows and per-platform emulator overrides filed under a folder name to their platform
+(`services/firmware/refiling.py`, [Backend Architecture](backend-architecture.md)); until then those rows stay where
+they are, and a platform's delete does not reach them.
+
 ## The runtime Unit of Work
 
 The schema is read and written at runtime through a **Unit of Work** (UoW) — the atomic transaction boundary one

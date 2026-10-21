@@ -1,0 +1,22 @@
+-- =============================================================================
+-- 034_clear_firmware_cache_filed_by_folder.sql — forget the firmware listing
+-- cached under server folder names
+-- #2191 (D1)
+-- =============================================================================
+--
+--   * firmware_cache — every row is dropped. Its platform_slug was a folder
+--     name read out of a file's path (the segment after bios/, or the path's
+--     first segment otherwise); it is now the platform RomM states for the file
+--     (domain/firmware_platforms.py). A row of the old kind would answer for
+--     the wrong platform until the cache's hour ran out, and after that too
+--     whenever the server could not be read. With the table empty,
+--     the first listing read asks the server, and the first read that reaches
+--     it also moves Tender's older download records and per-platform emulator
+--     overrides (services/firmware/refiling.py).
+--
+-- The table is a cache: the next read from the server fills it again.
+--
+-- Transaction-safe DDL only — the runner (adapters/sqlite_migrations.py) wraps
+-- BEGIN/COMMIT and stamps PRAGMA user_version = 34.
+-- -----------------------------------------------------------------------------
+DELETE FROM firmware_cache;
