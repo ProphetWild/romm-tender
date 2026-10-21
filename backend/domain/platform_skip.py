@@ -21,6 +21,7 @@ from domain.iso_time import parse_iso
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, Sequence
 
+    from domain.collection_sync_state import CollectionSyncState
     from domain.platform_sync_state import PlatformSyncState
 
 # #743 D1; what it covers and what it costs is docs/architecture/backend-architecture.md, "Incremental skip".
@@ -47,7 +48,7 @@ def parse_romm_timestamp(value: object) -> datetime | None:
     return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
 
 
-def skip_reference(stamp: PlatformSyncState) -> datetime | None:
+def skip_reference(stamp: PlatformSyncState | CollectionSyncState) -> datetime | None:
     """The stamp's fetch start less the margin, or ``None`` without one: a ROM updated after it means a change."""
     started = parse_romm_timestamp(stamp.fetch_started_at)
     return started - SKIP_REFERENCE_MARGIN if started is not None else None
@@ -119,7 +120,7 @@ def restamp_due(stamp: PlatformSyncState | None, fetched_roms: Sequence[Mapping[
     True for no stamp (the caller passes ``stamp_for_skip``'s answer, so a
     revoked one too), a stamp with no checksum or no fetch start, a checksum
     other than the fetched ids', and a fetched ROM updated after the stamp's
-    reference — every way the skip refuses a stamp that a fresh one would cure.
+    reference — every way the skip refuses a stamp.
     A fetched ROM without a readable ``updated_at`` cannot be cleared, so it
     counts as updated, and one without an int ``id`` cannot be checked against
     the checksum, so it counts as another id set.
