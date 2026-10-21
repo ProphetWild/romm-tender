@@ -447,11 +447,11 @@ shapes.
   id; the name is bounded and path-sanitized, and the seal refuses to overwrite an existing directory regardless. The
   folder name is not a rename — it is the `bundle_id` the seal is written with, so `SEAL.json`'s basename binding holds
   by construction.
-- **`README.txt`** — a generated index: every ROM id with its name, file name, platform and role in the run (removed, or
-  kept and recorded for context); every `files/NNNNNN` blob with its artifact kind in plain words, its size, and the
-  absolute path it must be copied back to; playtime in whole units beside the game's name; and step-by-step manual
-  restore instructions starting with the checksum verification. It is rendered **inside** the seal, because the blob
-  mapping it indexes only exists once the artifacts have been copied.
+- **`README.txt`** — a generated index: every ROM id with its name, file name, platform and role in the run (removed);
+  every `files/NNNNNN` blob with its artifact kind in plain words, its size, and the absolute path it must be copied
+  back to; playtime in whole units beside the game's name; and step-by-step manual restore instructions starting with
+  the checksum verification. It is rendered **inside** the seal, because the blob mapping it indexes only exists once
+  the artifacts have been copied.
 - **`playtime.txt`** — keeps its exact machine-readable fields, with the game's name beside each ROM id.
 
 For a fully vanished game whose shortcut will be removed, an enabled bundle also captures Steam artwork and per-app
@@ -479,8 +479,10 @@ cleanup to move.
 Save **states** are entirely untouched and remain unsupported. Extending save-state support must extend this recovery
 contract before purge is allowed to remove state files.
 
-A whole game whose bound version has unsynced saves is removed only once its recovery bundle sealed. With recovery
-disabled or failed, the group is skipped instead.
+A whole game whose bound version has unsynced saves — the local-save check's stranding verdict
+([Save File Sync Architecture](save-file-sync-architecture.md#the-local-save-check)) — is removed only once its recovery
+bundle sealed. With recovery disabled or failed, the group is skipped instead. Where no bundle was chosen and the check
+could not read, the skip's message says that Tender couldn't check whether the saves have been synced.
 
 ## Steam-side outcomes
 

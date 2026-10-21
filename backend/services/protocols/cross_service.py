@@ -372,16 +372,17 @@ class RomLaunchPathReader(Protocol):
 
 
 class SaveDriftProbeFn(Protocol):
-    """Local-save drift probe consumed by VersionSwitchService and PruneService.
+    """Local-save check consumed by VersionSwitchService and PruneService.
 
     The composition root satisfies this with ``SaveService.check_local_drift``.
-    Reports whether the ROM's local save files diverge from their persisted sync
-    baseline (a purely-local content-hash read) — the signal that a change to the
-    ROM's shortcut would strand un-uploaded save changes: a version switch moving
-    it off a downloaded version, or a removed-game cleanup removing the whole
-    game. Returns the
-    ``{"drifted": bool, "rom_id": int}`` shape and never raises (the check
-    collapses any internal error to not-drifted).
+    It reads the ROM's save files against their recorded syncs without asking
+    the server, after following a moved save directory under the ROM's
+    ``rom_lock``. Its ``stranding`` field
+    (``domain/save_stranding.py::stranding_verdict``) says whether a change to
+    the ROM's shortcut would strand saves that exist nowhere else: a version
+    switch moving it off a downloaded version, or a removed-game cleanup
+    removing the whole game. Returns
+    ``{"rom_id", "drifted", "only_here", "stranding"}`` and never raises.
     """
 
     async def __call__(self, rom_id: int) -> dict[str, Any]: ...

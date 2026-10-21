@@ -369,7 +369,26 @@ export const resumeDownload = endpoint<[number], BackendResult | TargetOccupiedR
 export const getDownloadQueue = endpoint<[], { downloads: DownloadItem[] }>("get_download_queue");
 export const clearCompletedDownloads = endpoint<[], { success: boolean; cleared: number }>("clear_completed_downloads");
 export const getInstalledRom = endpoint<[number], InstalledRom | null>("get_installed_rom");
-export const checkLocalDrift = endpoint<[number], { drifted: boolean; rom_id: number }>("check_local_drift");
+/**
+ * Whether a version's local saves would be left behind by moving its shortcut
+ * off it; the rule is `backend/domain/save_stranding.py`'s.
+ */
+export type SaveStranding = "none" | "unsynced" | "unchecked";
+
+/**
+ * The local-save check, answered without asking the server: `drifted` (a save
+ * changed since its last recorded sync) and `only_here` (a save with no
+ * recorded sync) reported apart, and `stranding`, the one answer the version
+ * switch, the removed-game cleanup and the Saves tab's reminder read. Which
+ * field the offline launch reads is `docs/architecture/save-file-sync-architecture.md`'s.
+ */
+export interface LocalDriftAnswer {
+  rom_id: number;
+  drifted: boolean;
+  only_here: boolean;
+  stranding: SaveStranding;
+}
+export const checkLocalDrift = endpoint<[number], LocalDriftAnswer>("check_local_drift");
 export type RelaunchOptionsResult =
   | { success: true; app_id: number; launch_options: string; prune_lease_token: string }
   | { success: false; reason: WireReason; message: string }
@@ -895,16 +914,19 @@ export interface SwitchVersionSuccess {
 }
 
 /**
- * Soft-block: switching away from a downloaded version whose local saves have
- * unsynced changes (#1298). `server_reachable` decides which confirm modal to
- * show (T4 reachable offers "Sync now & switch", T5 offline does not);
- * `unsynced_rom_id` / `unsynced_version_name` name the version that would be
- * stranded. The user resolves it with the `allow_stranded` override.
+ * Soft-block: switching away from a downloaded version whose local saves would
+ * be stranded. `stranding` says whether they are unsynced or could not be
+ * checked; `server_reachable` is one of the two facts, with whether the
+ * version being left is gone from RomM, that decide whether the confirm offers
+ * "Sync now & switch"; `unsynced_rom_id` / `unsynced_version_name` name the
+ * version that would be stranded. The user resolves it with the
+ * `allow_stranded` override.
  */
 export interface SwitchVersionUnsyncedSaves {
   success: false;
   reason: WireReasonSubset<"unsynced_saves">;
   message: string;
+  stranding: Exclude<SaveStranding, "none">;
   server_reachable: boolean;
   unsynced_rom_id: number;
   unsynced_version_name: string;
