@@ -1856,6 +1856,20 @@ a different destination, not the same one. A legacy token minted before origin s
 None` and is treated as un-bound: it is still attached (never blocked) so existing installs
 keep working until their next sign-in stamps the origin.
 
+**An address carrying a user name or password is refused where it is entered, and, saved, at each sign-in and at the
+connection check.** No request to such an address reaches RomM; why is the comment above the two sentences in
+`lib/url_host.py`. `carries_userinfo` beside them decides it, and each refusal is a `config_error`:
+`ENTERED_ADDRESS_WITH_USERINFO_MESSAGE` when the URL is saved (`SettingsService.save_server_url`), and
+`STORED_ADDRESS_WITH_USERINFO_MESSAGE` at each of the three sign-ins — the panel signs in with the URL it holds saved —
+and at `test_connection`, before any request. The panel's Connection row names it _Remove login from RomM URL_. A stored
+one is not refused anywhere else: a sync, a download or any other request to it is still attempted and fails, with
+errors that carry no login (below, "what an error's text carries").
+
+**A stored token no HTTP header can carry is refused before it is used.** `auth_header()` raises `TokenUnsendableError`
+for a token holding a CR, an LF or a character past latin-1 (`domain/header_value.py`, the same rule the SteamGridDB key
+is checked by), after the origin check. Like a host mismatch it is non-retryable and answers `config_error`
+(`Your saved RomM login cannot be used. Sign in again to continue.`), so it never marks RomM unreachable.
+
 **Sign-in ordering: validate → probe → mint → persist (one atomic save).** `establish_token` trims the entered URL and
 rejects a non-http(s) value before any network call. It then holds the candidate URL in memory only — clearing the
 stored token in memory first so the version probe never carries the old server's bearer to the candidate host — and
@@ -2326,7 +2340,7 @@ through a seam. Selected adapters:
 | `romm/retry.py`                                                            | `RetryLadder` — the attempt policy behind that transport: retry ladder, backoff, known-unreachable state                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | `romm/romm_api.py`                                                         | `RommApiAdapter` — RomM REST surface (saves, ROMs, platforms, firmware, devices, play-sessions) over the HTTP transport                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | `steam_config.py`                                                          | `SteamConfigAdapter` — Steam VDF read/write, grid dir, shortcut icon write, Steam Input config                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| `steamgriddb.py`                                                           | `SteamGridDbAdapter` — SteamGridDB REST client; every failure to reach SteamGridDB or to read its answer raises `SgdbApiError`, its `status_code` `None` where there is no HTTP status, and an image download that fails answers `False`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `steamgriddb.py`                                                           | `SteamGridDbAdapter` — SteamGridDB REST client; every failure to reach SteamGridDB or to read its answer raises `SgdbApiError`, its `status_code` `None` where there is no HTTP status, and an image download that fails answers `False`; a key no HTTP header can carry raises `SgdbKeyUnsendableError` before any request, which the shortcut artwork job answers as a refused key                                                                                                                                                                                                                                                                                                                                                                |
 | `github_releases.py`                                                       | `GithubReleaseAdapter` — `LatestReleaseFn`: GitHub's "latest release" route, the `tender-v` tag and the release's `romm-tender-<V>.tar.gz` asset with its `digest` and its `.sha256` asset; every failure answers `None`. And `ReleaseAssetDownloadFn`: one asset downloaded with byte progress, written beside the destination and renamed into place; a failure raises                                                                                                                                                                                                                                                                                                                                                                            |
 | `update_failure.py`                                                        | `UpdateFailureFileAdapter` — `UpdateFailureFn`: the installer's `update-failure.json` under the state root; a record that is missing, unreadable or malformed answers `None`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | `update_staging.py`                                                        | `UpdateStagingAdapter` — `UpdateStagingStore`: `<cache root>/update/`, removed whole; the tarball under its asset name, its sha256, and only `romm-tender/install.sh` copied out of it, as a regular file, under a name chosen here                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
@@ -2465,6 +2479,24 @@ introduced, and it is tracked in #1889.
 The values are read from the live settings dict at call time, the way `romm_url` is: a value captured in `__init__`
 would go stale the moment the user edits it. They never reach a log line — `CustomHeader.__repr__` prints the name
 alone, and no refusal message quotes a value.
+
+#### RommHttpAdapter notes: what an error's text carries
+
+Where an error the adapter raises names a request, it names its method and URL, path and query included — never a
+header, and never the address's user name or password: `translate_http_error` and `_translate_with_detail` write the URL
+through `lib/url_host.without_userinfo`, and `RommApiError` stores its `url` the same way. A password holding an
+unescaped `/`, `?` or `#` is not recognised as one (`_userinfo_end` says why).
+
+A request `urllib` or `http.client` cannot build raises an exception whose text holds the material it refused —
+`InvalidURL` for an address it cannot read as a host and port, a `ValueError` from `urllib.request.Request` for an
+address without a scheme or from a header value, `UnicodeEncodeError` among them. For those alone
+(`_could_not_be_built`) `_translate_unwrapped` keeps only the type (`Unexpected error: InvalidURL`), and the error is
+raised without its cause, so no traceback shows the original either; `_new_request` does the same for the `Request`
+every method builds before its translated `try`. An answer that could not be read — `json.JSONDecodeError`,
+`UnicodeDecodeError`, both `ValueError` too — keeps its text and its cause. Either way the reason stays what it was: a
+status-less `RommApiError`, which `classify_error` answers `server_unreachable`.
+`tests/adapters/romm/test_http.py::TestNoCredentialReachesAnErrorOrALog` holds every public request method, failing
+every way, to that, traceback included.
 
 #### RommHttpAdapter notes: what makes a 404 an entity verdict
 

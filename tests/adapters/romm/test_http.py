@@ -4,6 +4,7 @@ import io
 import json
 import logging
 import ssl
+import traceback
 import urllib.error
 from dataclasses import dataclass
 from typing import Any, ClassVar
@@ -25,6 +26,7 @@ from lib.errors import (
     RommTimeoutError,
     RommUnprocessableEntityError,
     TokenHostMismatchError,
+    TokenUnsendableError,
     classify_error,
 )
 from lib.list_result import ErrorCode
@@ -204,6 +206,31 @@ class TestRommAuthHeader:
         with pytest.raises(TokenHostMismatchError):
             romm_http.adapter.auth_header()
 
+    @pytest.mark.parametrize(
+        "token",
+        [
+            pytest.param("rmm_fake\r\nX-Injected: 1", id="line-break"),
+            pytest.param("rmm_fake\u2019", id="past-latin-1"),
+        ],
+    )
+    def test_raises_on_a_token_no_header_can_carry(self, romm_http, token):
+        romm_http.settings["romm_url"] = "https://romm.local"
+        romm_http.settings["romm_api_token"] = token
+        with pytest.raises(TokenUnsendableError) as caught:
+            romm_http.adapter.auth_header()
+        assert "rmm_fake" not in str(caught.value)
+
+    def test_a_token_no_header_can_carry_is_refused_before_any_request(self, romm_http):
+        romm_http.settings["romm_url"] = "https://romm.local"
+        romm_http.settings["romm_api_token"] = "rmm_fake\nX-Injected: 1"
+        with patch("urllib.request.urlopen") as urlopen, pytest.raises(TokenUnsendableError) as caught:
+            romm_http.adapter.request("/api/platforms")
+        urlopen.assert_not_called()
+        assert classify_error(caught.value) == (
+            "config_error",
+            "Your saved RomM login cannot be used. Sign in again to continue.",
+        )
+
     def test_no_raise_without_token_even_if_origin_set(self, romm_http):
         """No token → no header, no raise (the guard only applies when a token exists)."""
         romm_http.settings["romm_url"] = "https://evil.host"
@@ -216,6 +243,9 @@ class TestTokenHostMismatchRetry:
     def test_token_host_mismatch_is_not_retryable(self):
         """A wrong-origin token can never succeed by retrying — must stay non-retryable."""
         assert RommHttpAdapter.is_retryable(TokenHostMismatchError("mismatch")) is False
+
+    def test_a_token_no_header_can_carry_is_not_retryable(self):
+        assert RommHttpAdapter.is_retryable(TokenUnsendableError("unsendable")) is False
 
 
 class TestCustomProxyHeaders:
@@ -1209,7 +1239,8 @@ class TestTranslateHttpError:
         exc = ValueError("bad value")
         result = romm_http.adapter.translate_http_error(exc, "http://romm.local/api/x")
         assert isinstance(result, RommApiError)
-        assert "Unexpected error: bad value" in str(result)
+        assert str(result) == "Unexpected error: ValueError"
+        assert "bad value" not in str(result)
 
 
 class TestNotFoundDiscrimination:
@@ -2473,3 +2504,261 @@ class TestDownloadConditional:
         )
         with patch("urllib.request.urlopen", side_effect=exc), pytest.raises(RommNotFoundError):
             adapter.download_conditional("/c.png?ts=1", dest, etag='"v1"')
+
+
+_ADDRESS_PASSWORD = "fake-address-pw-7d1"
+_TOKEN = "fake-token-3c9"
+_HEADER_VALUE = "fake-header-value-5e2"
+_SENTINELS = (_ADDRESS_PASSWORD, _TOKEN, _HEADER_VALUE)
+
+_REQUEST_METHODS = (
+    "request",
+    "request_once",
+    "download",
+    "download_conditional",
+    "download_external",
+    "json_request",
+    "post_json",
+    "put_json",
+    "upload_multipart",
+    "unauthenticated_post_json",
+    "basic_auth_request",
+)
+
+
+def _call_request_method(name: str, adapter: RommHttpAdapter, tmp_path) -> None:
+    """Call the public request method *name* of *adapter* once, with files under *tmp_path*."""
+    dest = str(tmp_path / "out.bin")
+    upload = tmp_path / "save.srm"
+    upload.write_bytes(b"SAVE")
+    calls = {
+        "request": lambda: adapter.request("/api/roms/1"),
+        "request_once": lambda: adapter.request_once("/api/heartbeat", timeout=3),
+        "download": lambda: adapter.download("/api/roms/1/content/x.zip", dest),
+        "download_conditional": lambda: adapter.download_conditional("/assets/cover.png", dest, etag='"e"'),
+        "download_external": lambda: adapter.download_external(
+            f"https://user:{_ADDRESS_PASSWORD}@cdn.example/c.png", dest
+        ),
+        "json_request": lambda: adapter.json_request("/api/x", {"a": 1}, method="PATCH"),
+        "post_json": lambda: adapter.post_json("/api/x", {"a": 1}),
+        "put_json": lambda: adapter.put_json("/api/x", {"a": 1}),
+        "upload_multipart": lambda: adapter.upload_multipart("/api/saves", str(upload)),
+        "unauthenticated_post_json": lambda: adapter.unauthenticated_post_json("/api/pair", {"code": "X"}),
+        "basic_auth_request": lambda: adapter.basic_auth_request("/api/token", "user", "fake-basic-pw"),
+    }
+    calls[name]()
+
+
+def _json_http_error(code: int, reason: str, body: object) -> urllib.error.HTTPError:
+    return _http_error(code, reason, content_type="application/json", body=json.dumps(body).encode())
+
+
+_ANSWERED_FAILURES = {
+    "http-401": lambda: _http_error(401, "Unauthorized"),
+    "http-404-entity": _entity_404,
+    "http-404-proxy": lambda: _http_error(404, "Not Found", content_type="text/html", body=b"<h1>404</h1>"),
+    "http-422": lambda: _json_http_error(422, "Unprocessable Entity", {"detail": [{"msg": "field required"}]}),
+    "http-500": lambda: _json_http_error(500, "Internal Server Error", {"detail": "db down"}),
+    "url-error": lambda: urllib.error.URLError(ConnectionRefusedError(111, "Connection refused")),
+    "timeout": lambda: TimeoutError("timed out"),
+}
+
+
+# The public methods of ``RommHttpAdapter`` that send no request.
+_NOT_REQUEST_METHODS = frozenset(
+    {"auth_header", "is_retryable", "on_retry", "ssl_context", "translate_http_error", "with_retry"}
+)
+
+
+def test_every_public_request_method_is_in_the_sentinel_list():
+    """A new public method of ``RommHttpAdapter`` is a request method the sentinel tests call, or named as none."""
+    public = {name for name in vars(RommHttpAdapter) if not name.startswith("_")}
+
+    assert public - _NOT_REQUEST_METHODS == set(_REQUEST_METHODS)
+
+
+class TestNoCredentialReachesAnErrorOrALog:
+    """No token, custom header value or address password in an error, ``classify_error``'s message or a log.
+
+    The error is read as its text, its ``url`` and its whole traceback, the chain
+    included. Each request method fails every way: answered by RomM or a proxy,
+    unreachable, timed out, and refused by ``urllib`` or ``http.client`` before
+    it is sent.
+    """
+
+    @pytest.fixture
+    def secrets_http(self, caplog):
+        caplog.set_level(logging.DEBUG)
+        settings: dict[str, Any] = {
+            "romm_url": f"https://user:{_ADDRESS_PASSWORD}@romm.local",
+            "romm_api_token": _TOKEN,
+            "romm_api_token_origin": None,
+            "romm_custom_headers": [{"name": "P-Access-Token", "value": _HEADER_VALUE}],
+        }
+        log_debug = MagicMock()
+        adapter = RommHttpAdapter(settings, logging.getLogger("test.secrets"), _USER_AGENT, log_debug=log_debug)
+        return adapter, settings, log_debug
+
+    @staticmethod
+    def _failure(name: str, adapter: RommHttpAdapter, tmp_path) -> RommApiError:
+        with patch("adapters.romm.retry.time.sleep"), pytest.raises(RommApiError) as caught:
+            _call_request_method(name, adapter, tmp_path)
+        return caught.value
+
+    @staticmethod
+    def _assert_no_sentinel(err: Exception, caplog, log_debug) -> None:
+        _reason, message = classify_error(err)
+        seen = {
+            "error text": str(err),
+            "error url": str(getattr(err, "url", "")),
+            "traceback": "".join(traceback.format_exception(err)),
+            "classify_error message": message,
+            "log": caplog.text,
+            "log_debug": str(log_debug.call_args_list),
+        }
+        for sentinel in _SENTINELS:
+            for where, text in seen.items():
+                assert sentinel not in text, f"{sentinel} in the {where}: {text}"
+
+    @pytest.mark.parametrize("failure", list(_ANSWERED_FAILURES))
+    @pytest.mark.parametrize("name", _REQUEST_METHODS)
+    def test_a_failed_request_carries_none(self, secrets_http, caplog, tmp_path, name, failure):
+        adapter, _settings, log_debug = secrets_http
+
+        with patch.object(RommHttpAdapter, "_urlopen", side_effect=_ANSWERED_FAILURES[failure]()):
+            err = self._failure(name, adapter, tmp_path)
+
+        self._assert_no_sentinel(err, caplog, log_debug)
+
+    @pytest.mark.parametrize("name", _REQUEST_METHODS)
+    def test_a_request_to_an_address_with_a_password_carries_none(self, secrets_http, caplog, tmp_path, name):
+        adapter, _settings, log_debug = secrets_http
+
+        with (
+            patch("http.client.HTTPConnection.connect", side_effect=OSError("no network in this test")),
+            patch("http.client.HTTPSConnection.connect", side_effect=OSError("no network in this test")),
+        ):
+            err = self._failure(name, adapter, tmp_path)
+
+        self._assert_no_sentinel(err, caplog, log_debug)
+
+    @pytest.mark.parametrize("name", [name for name in _REQUEST_METHODS if name != "download_external"])
+    def test_a_scheme_less_address_with_a_password_carries_none(self, secrets_http, caplog, tmp_path, name):
+        """``urllib.request.Request`` itself refuses an address without a scheme, naming all of it.
+
+        ``download_external`` is left out: it fetches a URL of its own, never the RomM URL.
+        """
+        adapter, settings, log_debug = secrets_http
+        settings["romm_url"] = f"//user:{_ADDRESS_PASSWORD}@romm.local"
+
+        with patch("urllib.request.urlopen") as urlopen:
+            err = self._failure(name, adapter, tmp_path)
+
+        urlopen.assert_not_called()
+        self._assert_no_sentinel(err, caplog, log_debug)
+
+    @pytest.mark.parametrize("name", _REQUEST_METHODS)
+    def test_a_token_with_a_line_break_carries_none(self, secrets_http, caplog, tmp_path, name):
+        adapter, settings, log_debug = secrets_http
+        settings["romm_url"] = "https://romm.local"
+        settings["romm_api_token"] = f"{_TOKEN}\r\nX-Injected: 1"
+
+        with (
+            patch("http.client.HTTPConnection.connect", side_effect=OSError("no network in this test")),
+            patch("http.client.HTTPSConnection.connect", side_effect=OSError("no network in this test")),
+        ):
+            err = self._failure(name, adapter, tmp_path)
+
+        self._assert_no_sentinel(err, caplog, log_debug)
+
+    def test_a_request_that_cannot_be_built_is_answered_with_the_exception_type_and_its_reason(self, secrets_http):
+        """A request ``http.client`` refused to build keeps the reason it was answered with; only its text changes."""
+        adapter, _settings, _log_debug = secrets_http
+
+        with pytest.raises(RommApiError) as caught:
+            adapter.request_once("/api/heartbeat", timeout=3)
+
+        assert str(caught.value) == "Unexpected error: InvalidURL"
+        assert classify_error(caught.value) == (ErrorCode.SERVER_UNREACHABLE.value, "Unexpected error: InvalidURL")
+
+    def test_a_request_that_cannot_be_built_is_raised_without_its_cause(self, secrets_http):
+        adapter, _settings, _log_debug = secrets_http
+
+        with pytest.raises(RommApiError) as caught:
+            adapter.request_once("/api/heartbeat", timeout=3)
+
+        assert caught.value.__cause__ is None
+        assert caught.value.__suppress_context__ is True
+
+
+class TestAnAnswerThatCannotBeReadKeepsItsText:
+    """Only a request that could not be built loses its exception text; an answer that could not be read keeps it."""
+
+    @pytest.mark.parametrize(
+        ("body", "text"),
+        [
+            pytest.param(b"<html>not json</html>", "Expecting value: line 1 column 1 (char 0)", id="not-json"),
+            pytest.param(b"\xff\xfe", "'utf-8' codec can't decode byte 0xff in position 0", id="not-utf-8"),
+        ],
+    )
+    def test_the_reason_it_could_not_be_read_is_kept(self, romm_http, body, text):
+        _configure_server(romm_http.settings)
+
+        with (
+            patch("urllib.request.urlopen", return_value=_make_resp(200, {}, body)),
+            pytest.raises(RommApiError) as caught,
+        ):
+            romm_http.adapter.request_once("/api/heartbeat", timeout=3)
+
+        assert str(caught.value).startswith("Unexpected error: ")
+        assert text in str(caught.value)
+        assert caught.value.__cause__ is not None
+
+    @pytest.mark.parametrize(
+        "exc",
+        [
+            pytest.param(http.client.InvalidURL("nonnumeric port: 'fake-pw@romm.local'"), id="invalid-url"),
+            pytest.param(ValueError("Invalid header value b'Bearer fake'"), id="value-error"),
+            pytest.param(UnicodeEncodeError("latin-1", "fake\u2019", 4, 5, "ordinal not in range(256)"), id="encode"),
+        ],
+    )
+    def test_a_request_that_cannot_be_built_keeps_only_its_type(self, exc):
+        err = RommHttpAdapter._translate_unwrapped(exc, "/api", "GET")
+
+        assert str(err) == f"Unexpected error: {type(exc).__name__}"
+
+
+class TestAContentLengthThatIsNoLength:
+    """An announced length that does not parse, or is not positive, counts as no length, as a missing one does."""
+
+    @pytest.mark.parametrize(
+        "fetch",
+        [
+            pytest.param(lambda adapter, dest: adapter.download("/api/roms/1/content/x.zip", dest), id="download"),
+            pytest.param(
+                lambda adapter, dest: adapter.download_conditional("/assets/cover.png", dest), id="download_conditional"
+            ),
+        ],
+    )
+    @pytest.mark.parametrize("length", ["abc", "-5"])
+    def test_the_body_is_still_written(self, romm_http, tmp_path, fetch, length):
+        _configure_server(romm_http.settings)
+        dest = tmp_path / "out.bin"
+
+        with patch("urllib.request.urlopen", return_value=_make_resp(200, {"Content-Length": length}, b"BYTES")):
+            fetch(romm_http.adapter, str(dest))
+
+        assert dest.read_bytes() == b"BYTES"
+
+    def test_a_negative_length_is_never_reported_as_the_size(self, romm_http, tmp_path):
+        _configure_server(romm_http.settings)
+        progress: list[tuple[int, int]] = []
+
+        with patch("urllib.request.urlopen", return_value=_make_resp(200, {"Content-Length": "-5"}, b"BYTES")):
+            romm_http.adapter.download(
+                "/api/roms/1/content/x.zip",
+                str(tmp_path / "out.bin"),
+                lambda done, total: progress.append((done, total)),
+            )
+
+        assert progress == []

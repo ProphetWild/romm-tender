@@ -2248,11 +2248,21 @@ Updates**; the button is Settings' alone.
 Settings' value inputs — RomM URL, custom headers, account, the SteamGridDB API key, default slot — each open a modal,
 because nothing on the page has to be seen while one is typed ([Text input](#text-input)).
 
-Two failures the narrow page carried are fixed here (#1020). A refused URL no longer sticks: the pending edit exists to
-carry a value across the remount that closing the modal can cause, so it is cleared whichever way the attempt ends, and
-the next open of the page shows the URL that was saved rather than the one that was rejected. And **Apply to all
-shortcuts** refuses a second press while a run is in flight — the guard is in the handler rather than only on the
-button, because a disabled control still reports a press on the device, and the button says which state it is in.
+Two failures the narrow page carried are fixed here (#1020). A refused URL no longer sticks: the RomM URL's modal saves
+before it closes and only a URL the backend stored closes it, so the row and the next open of the page show the URL that
+was saved rather than the one that was rejected. And **Apply to all shortcuts** refuses a second press while a run is in
+flight — the guard is in the handler rather than only on the button, because a disabled control still reports a press on
+the device, and the button says which state it is in.
+
+The RomM URL's modal checks the URL the way **Another folder…** checks a place: OK, Enter in the field and R2 save it
+through the backend, a refusal — or _Failed to save settings_ where the backend could not be reached — is shown under
+the field in amber with the text kept, editing the text drops it, and only a stored URL closes it on OK, Enter or R2.
+Cancel and B close it at once; a save OK already sent still lands, and the page takes up the URL it stored. The **Allow
+Insecure SSL** switch saves the URL again with its flag; a refusal of that save puts its message on the section's status
+line, and the switch goes back to the stored flag, or, where none is known, to where it stood before the press. An
+accepted save of either puts the switch at the flag it sent, and clears the line of a message the switch's save put
+there; what loading the settings or signing in said stays. The status line shows a refusal or a failure — of a save, of
+loading the settings, of signing out — in amber behind a warning sign, and any other message plain.
 
 ## Data Management
 

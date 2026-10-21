@@ -3,6 +3,7 @@
 import base64
 import contextlib
 import gzip
+import http.client
 import json
 import logging
 import os
@@ -15,10 +16,11 @@ import uuid
 import zlib
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, NoReturn
 
 from adapters.romm.retry import RetryLadder, RetryListener
 from domain.custom_headers import stored_custom_headers
+from domain.header_value import no_header_can_carry
 from lib.certifi_bundle import ca_bundle as _ca_bundle
 from lib.errors import (
     DeviceWriteError,
@@ -36,11 +38,26 @@ from lib.errors import (
     RommTimeoutError,
     RommUnprocessableEntityError,
     TokenHostMismatchError,
+    TokenUnsendableError,
 )
-from lib.url_host import same_origin
+from lib.url_host import same_origin, without_userinfo
 from models.cover import CoverRevalidation
 
 _CONTENT_TYPE_JSON = "application/json"
+
+
+def _could_not_be_built(exc: BaseException) -> bool:
+    """Whether *exc* is ``urllib`` or ``http.client`` refusing to build a request.
+
+    ``InvalidURL`` for an address ``http.client`` cannot read as a host and port,
+    and a ``ValueError`` from ``urllib.request.Request`` or from a header value
+    (``UnicodeEncodeError`` among them). Their text holds the request material
+    they refused. ``json.JSONDecodeError`` and ``UnicodeDecodeError`` are
+    ``ValueError`` too but say that an answer could not be read, and are not.
+    """
+    if isinstance(exc, json.JSONDecodeError | UnicodeDecodeError):
+        return False
+    return isinstance(exc, http.client.InvalidURL | ValueError)
 
 
 def _on_device(operation, *args):
@@ -138,6 +155,8 @@ class RommHttpAdapter:
         instead of leaking the bearer to a wrong/hostile host (#1039). A legacy
         token minted before origin stamping (origin ``None``) is still attached,
         so existing installs keep working until their next sign-in stamps it.
+        A token no header can carry raises :class:`TokenUnsendableError` before
+        it is put on a request.
 
         Returning ``None`` lets callers omit the ``Authorization`` header on
         unauthenticated probes (fresh setup, before a token is minted). An empty
@@ -150,6 +169,8 @@ class RommHttpAdapter:
         origin = self._settings.get("romm_api_token_origin")
         if origin is not None and not same_origin(origin, self._settings.get("romm_url")):
             raise TokenHostMismatchError("Stored token was minted for a different server than the configured URL")
+        if no_header_can_carry(token):
+            raise TokenUnsendableError("Stored token holds a character no HTTP header can carry")
         return f"Bearer {token}"
 
     def _apply_origin_headers(self, req: urllib.request.Request) -> None:
@@ -365,8 +386,10 @@ class RommHttpAdapter:
         Same status → type mapping as :meth:`translate_http_error` (422 keeps its
         own structured path), but the FastAPI ``detail`` string is read once and
         attached to the typed error, so a caller can branch on reasons that share
-        a status code (two 404s that differ only by ``detail``).
+        a status code (two 404s that differ only by ``detail``). The error's
+        text names *url* without its user name and password.
         """
+        url = without_userinfo(url)
         if exc.code == 422:
             return self._translate_unprocessable(exc, url, method)
         if exc.code >= 500:
@@ -382,14 +405,35 @@ class RommHttpAdapter:
 
     @staticmethod
     def _translate_unwrapped(exc: Exception, url: str, method: str) -> RommApiError:
-        """Translate non-HTTP exceptions (ssl, timeout, connection) to typed errors."""
+        """Translate non-HTTP exceptions (ssl, timeout, connection) to typed errors.
+
+        A request that could not be built (:func:`_could_not_be_built`) keeps
+        only its exception's type; anything else keeps its text.
+        """
         if isinstance(exc, ssl.SSLError):
             return RommSSLError(str(exc), url=url, method=method)
         if isinstance(exc, socket.timeout | TimeoutError):
             return RommTimeoutError(str(exc), url=url, method=method)
         if isinstance(exc, ConnectionError | OSError):
             return RommConnectionError(str(exc), url=url, method=method)
+        if _could_not_be_built(exc):
+            return RommApiError(f"Unexpected error: {type(exc).__name__}", url=url, method=method)
         return RommApiError(f"Unexpected error: {exc}", url=url, method=method)
+
+    def _raise_translated(
+        self, exc: Exception, url: str, method: str = "GET", *, asset_route: bool = False, romm_origin: bool = True
+    ) -> NoReturn:
+        """Raise :meth:`translate_http_error`'s answer for *exc*, chained to *exc*.
+
+        A request that could not be built is raised ``from None`` instead, which
+        keeps the refused request material out of every traceback of the
+        translated error; Python still sets ``__context__``, which the
+        traceback suppresses.
+        """
+        error = self.translate_http_error(exc, url, method, asset_route=asset_route, romm_origin=romm_origin)
+        if _could_not_be_built(exc):
+            raise error from None
+        raise error from exc
 
     def translate_http_error(
         self, exc: Exception, url: str, method: str = "GET", *, asset_route: bool = False, romm_origin: bool = True
@@ -409,7 +453,10 @@ class RommHttpAdapter:
 
         *romm_origin* is ``False`` for the third-party cover CDN: its 5xx is
         never RomM reporting an error, whatever its body says.
+
+        The error's text names *url* without its user name and password.
         """
+        url = without_userinfo(url)
         if isinstance(exc, urllib.error.HTTPError):
             if exc.code == 422:
                 # A 422 carries a structured validation body (FastAPI's
@@ -449,6 +496,20 @@ class RommHttpAdapter:
     # ------------------------------------------------------------------
     # HTTP request methods
     # ------------------------------------------------------------------
+
+    @classmethod
+    def _new_request(cls, url: str, *, method: str, data: bytes | None = None) -> urllib.request.Request:
+        """A request for *url*; an address ``urllib`` cannot read raises a :class:`RommApiError` naming only its type.
+
+        ``urllib.request.Request`` raises ``ValueError`` with the whole address
+        in its text for one without a scheme, a stored ``//user:pw@host`` among
+        them, and each request method builds its request outside the ``try``
+        that translates the rest.
+        """
+        try:
+            return urllib.request.Request(url, data=data, method=method)
+        except ValueError as exc:
+            raise cls._translate_unwrapped(exc, url, method) from None
 
     def _urlopen(self, req: urllib.request.Request, *, timeout: int, romm_origin: bool = True):
         """Send *req*, clearing the known-unreachable state the moment RomM answers.
@@ -511,7 +572,7 @@ class RommHttpAdapter:
         url = self._settings["romm_url"].rstrip("/") + path
 
         def _do_request():
-            req = urllib.request.Request(url, method="GET")
+            req = self._new_request(url, method="GET")
             self._apply_default_headers(req)
             # Only the JSON reads ask for gzip: ``download`` resumes with
             # ``Range``, which a compressed response defeats.
@@ -522,7 +583,7 @@ class RommHttpAdapter:
             except RommApiError:
                 raise
             except Exception as exc:
-                raise self.translate_http_error(exc, url, "GET") from exc
+                self._raise_translated(exc, url, "GET")
 
         return _do_request
 
@@ -580,8 +641,7 @@ class RommHttpAdapter:
         byte count, not the whole file (the full size comes from ``Content-Range``).
         """
         if total is None:
-            raw_total = resp.headers.get("Content-Length")
-            total = int(raw_total) if raw_total else 0
+            total = RommHttpAdapter._content_length(resp.headers)
         f = _on_device(open, dest_path, mode)
         try:
             while True:
@@ -611,6 +671,16 @@ class RommHttpAdapter:
         # close, so a full disk shows here rather than in a write.
         _on_device(f.close)
         return total, downloaded
+
+    @staticmethod
+    def _content_length(headers) -> int:
+        """The announced ``Content-Length``, or 0 where there is none or it is not a positive number."""
+        raw = headers.get("Content-Length")
+        try:
+            length = int(raw) if raw else 0
+        except ValueError:
+            return 0
+        return length if length > 0 else 0
 
     @staticmethod
     def _validate_download(total: int, downloaded: int) -> None:
@@ -666,7 +736,7 @@ class RommHttpAdapter:
         meta_sent = [False]
 
         def _do_download():
-            req = urllib.request.Request(url, method="GET")
+            req = self._new_request(url, method="GET")
             self._apply_default_headers(req)
             # Re-evaluated on every retry attempt from the CURRENT .tmp size, so a
             # retried resume picks up wherever the previous attempt left the file.
@@ -700,7 +770,7 @@ class RommHttpAdapter:
                 # Asset-level 404: a byte fetch answers about a FILE, never about an
                 # entity, so this 404 is never deletion-authority grade and keeps the
                 # plain status mapping. Do not unify it with the API routes' proof.
-                raise self.translate_http_error(exc, url, "GET", asset_route=True) from exc
+                self._raise_translated(exc, url, "GET", asset_route=True)
 
         return self.with_retry(_do_download)
 
@@ -731,7 +801,7 @@ class RommHttpAdapter:
         dest_path.parent.mkdir(parents=True, exist_ok=True)
 
         def _do_conditional():
-            req = urllib.request.Request(url, method="GET")
+            req = self._new_request(url, method="GET")
             self._apply_default_headers(req)
             if etag:
                 req.add_header("If-None-Match", etag)
@@ -760,11 +830,11 @@ class RommHttpAdapter:
                 # entity, so this 404 is never deletion-authority grade and keeps the
                 # plain status mapping — which is what arms the ``url_cover`` fallback
                 # on a static-mount cover miss. Do not unify it with the API routes.
-                raise self.translate_http_error(exc, url, "GET", asset_route=True) from exc
+                self._raise_translated(exc, url, "GET", asset_route=True)
             except (RommApiError, DeviceWriteError):
                 raise
             except Exception as exc:
-                raise self.translate_http_error(exc, url, "GET") from exc
+                self._raise_translated(exc, url, "GET")
 
         return self.with_retry(_do_conditional)
 
@@ -806,7 +876,7 @@ class RommHttpAdapter:
         dest_path.parent.mkdir(parents=True, exist_ok=True)
 
         def _do_download():
-            req = urllib.request.Request(encoded_url, method="GET")
+            req = self._new_request(encoded_url, method="GET")
             # Not ``_apply_origin_headers``: this host is a third-party CDN, and
             # the configured proxy headers are credentials for the user's own
             # RomM front door. Only the UA goes out.
@@ -830,7 +900,7 @@ class RommHttpAdapter:
                 # entity — and this one is a third-party CDN, which has no entity
                 # layer at all. Never deletion-authority grade; keeps the plain
                 # status mapping. Do not unify it with the API routes.
-                raise self.translate_http_error(exc, encoded_url, "GET", asset_route=True, romm_origin=False) from exc
+                self._raise_translated(exc, encoded_url, "GET", asset_route=True, romm_origin=False)
 
         return self._retry.enter(_do_download, (), {}, romm_origin=False)
 
@@ -858,8 +928,7 @@ class RommHttpAdapter:
                 # short/corrupt file.
                 return ("wb", 0, parsed[1])
         # 200 (server ignored Range — safe full re-download) → restart from byte 0.
-        raw_total = resp.headers.get("Content-Length")
-        return ("wb", 0, int(raw_total) if raw_total else 0)
+        return ("wb", 0, self._content_length(resp.headers))
 
     def json_request(self, path: str, data, method: str = "POST"):
         """Send a JSON request (POST/PUT) to RomM API, return parsed response."""
@@ -867,7 +936,7 @@ class RommHttpAdapter:
 
         def _do_json_request():
             body = json.dumps(data).encode("utf-8")
-            req = urllib.request.Request(url, data=body, method=method)
+            req = self._new_request(url, data=body, method=method)
             self._apply_default_headers(req)
             req.add_header("Content-Type", _CONTENT_TYPE_JSON)
             try:
@@ -881,7 +950,7 @@ class RommHttpAdapter:
                 # carries the per-device sync-disabled detail, #1489).
                 raise self._translate_with_detail(exc, url, method) from exc
             except Exception as exc:
-                raise self.translate_http_error(exc, url, method) from exc
+                self._raise_translated(exc, url, method)
 
         return self.with_retry(_do_json_request)
 
@@ -912,7 +981,7 @@ class RommHttpAdapter:
         body += f"\r\n--{boundary}--\r\n".encode()
 
         url = self._settings["romm_url"].rstrip("/") + path
-        req = urllib.request.Request(url, data=body, method=method)
+        req = self._new_request(url, data=body, method=method)
         self._apply_default_headers(req)
         req.add_header("Content-Type", f"multipart/form-data; boundary={boundary}")
         try:
@@ -921,7 +990,7 @@ class RommHttpAdapter:
         except RommApiError:
             raise
         except Exception as exc:
-            raise self.translate_http_error(exc, url, method) from exc
+            self._raise_translated(exc, url, method)
 
     # Intentionally skips with_retry: a public single-use credential (the pairing
     # code) must not be replayed — a retry burns the one-time code and the
@@ -939,7 +1008,7 @@ class RommHttpAdapter:
         """
         url = self._settings["romm_url"].rstrip("/") + path
         body = json.dumps(data).encode("utf-8")
-        req = urllib.request.Request(url, data=body, method="POST")
+        req = self._new_request(url, data=body, method="POST")
         self._apply_origin_headers(req)
         req.add_header("Content-Type", _CONTENT_TYPE_JSON)
         try:
@@ -951,7 +1020,7 @@ class RommHttpAdapter:
         except urllib.error.HTTPError as exc:
             raise self._translate_with_detail(exc, url, "POST") from exc
         except Exception as exc:
-            raise self.translate_http_error(exc, url, "POST") from exc
+            self._raise_translated(exc, url, "POST")
 
     # Intentionally skips with_retry: token mint/delete are not idempotent
     # and must not be retried (a duplicate mint would orphan a token).
@@ -975,7 +1044,7 @@ class RommHttpAdapter:
         """
         url = self._settings["romm_url"].rstrip("/") + path
         body = json.dumps(data).encode("utf-8") if data is not None else None
-        req = urllib.request.Request(url, data=body, method=method)
+        req = self._new_request(url, data=body, method=method)
         self._apply_origin_headers(req)
         if body is not None:
             req.add_header("Content-Type", _CONTENT_TYPE_JSON)
@@ -989,4 +1058,4 @@ class RommHttpAdapter:
         except RommApiError:
             raise
         except Exception as exc:
-            raise self.translate_http_error(exc, url, method) from exc
+            self._raise_translated(exc, url, method)

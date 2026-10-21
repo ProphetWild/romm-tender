@@ -313,6 +313,34 @@ journalctl --user -u romm-tender-update
 Then press **Try again**. A download that failed is often just the network; a checksum that did not match again, or an
 installer that stops each time, is worth reporting together with that output.
 
+## RomM Won't Connect
+
+### Connection shows "Remove login from RomM URL"
+
+**Symptom**: The **Connection** row on Tender's main QAM panel says _Remove login from RomM URL_, and a sync or download
+fails with an unexpected error, or as server unreachable. Signing in says, in the sign-in window, "Your saved RomM URL
+holds a user name and password, which Tender cannot sign in through. Remove them from the RomM URL, then sign in to RomM
+under RomM Account; a login for a proxy in front of RomM goes into Custom headers."
+
+**Explanation**: The stored RomM URL carries a user name and password (`https://user:password@host`). Tender cannot sign
+in through the address, and no request to it reaches RomM.
+
+**Fix**: In [Settings › Connections](configuration.md#connection-settings), tap **Edit** next to **RomM URL** and enter
+the address without the user name and password. If that login was for RomM, the Connection row says _Connected_ again
+once the token you are signed in with is accepted; otherwise tap **Sign in** (or **Sign in again**) under **RomM
+Account**. If it was for a proxy in front of RomM, enter it under
+[Custom headers](configuration.md#custom-headers-for-an-authenticating-proxy) instead.
+
+### Connection shows "Not connected" after "Your saved RomM login cannot be used"
+
+**Symptom**: The **Connection** row says _Not connected_, and a sync, download or game page says "Your saved RomM login
+cannot be used. Sign in again to continue."
+
+**Explanation**: The stored token holds a character no request can carry, such as a line break. Only a hand-edited
+settings file holds one.
+
+**Fix**: Tap **Sign in again** under **RomM Account** in [Settings › Connections](configuration.md#connection-settings).
+
 ## Games Won't Launch
 
 ### "RomM Sync" is still installed
