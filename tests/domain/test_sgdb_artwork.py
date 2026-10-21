@@ -14,6 +14,7 @@ from domain.sgdb_artwork import (
     cached_slot_of,
     choose_candidate,
     classify_resolution,
+    effective_sgdb_id,
     first_grid_url,
     is_cached_artwork,
     parse_autocomplete_results,
@@ -220,6 +221,17 @@ class TestClassifyResolution:
         assert classify_resolution(None, None) == "unresolved"
 
 
+class TestEffectiveSgdbId:
+    def test_romms_id_wins_over_the_users_choice(self):
+        assert effective_sgdb_id(7777, 8888) == 7777
+
+    def test_the_users_choice_stands_where_romm_gives_none(self):
+        assert effective_sgdb_id(None, 8888) == 8888
+
+    def test_neither_is_none(self):
+        assert effective_sgdb_id(None, None) is None
+
+
 class TestToUnsignedAppId:
     """The direction anything reading shortcuts.vdf needs."""
 
@@ -303,8 +315,8 @@ class TestWhatCountsAsACandidate:
         assert choose_candidate("grid", []) is None
         assert choose_candidate("grid", None) is None
 
-    @pytest.mark.parametrize("asset_type", ["grid", "logo", "icon"])
-    def test_a_wide_grid_logo_or_icon_without_an_id_is_no_candidate(self, asset_type):
+    @pytest.mark.parametrize("asset_type", ["grid", "logo", "hero", "icon"])
+    def test_an_image_without_an_id_is_no_candidate(self, asset_type):
         data = [{"url": "https://cdn.example/a.png", "width": 920, "height": 430}, _image(2, 460, 215)]
 
         assert _chosen(asset_type, data).image_id == 2
@@ -312,12 +324,8 @@ class TestWhatCountsAsACandidate:
     def test_an_id_that_is_a_bool_is_no_id(self):
         assert choose_candidate("grid", [{"id": True, "url": "https://cdn.example/a.png"}]) is None
 
-    def test_a_hero_without_an_id_is_still_a_candidate(self):
-        data = [{"url": "https://cdn.example/hero.png"}]
-
-        assert choose_candidate("hero", data) == SgdbCandidate(
-            image_id=None, url="https://cdn.example/hero.png", width=None, height=None
-        )
+    def test_a_hero_without_an_id_is_no_candidate(self):
+        assert choose_candidate("hero", [{"url": "https://cdn.example/hero.png"}]) is None
 
     def test_an_entry_without_a_url_is_skipped(self):
         data = [{"id": 1, "url": ""}, {"id": 2}, "junk", _image(3, 460, 215)]
@@ -331,15 +339,14 @@ class TestWhatCountsAsACandidate:
 
 
 class TestCachedArtworkNames:
-    @pytest.mark.parametrize("asset_type", ["grid", "logo", "icon"])
-    def test_a_wide_grid_logo_or_icon_is_named_by_its_image_id(self, asset_type):
+    @pytest.mark.parametrize("asset_type", ["grid", "logo", "hero", "icon"])
+    def test_each_image_is_named_by_its_image_id(self, asset_type):
         name = cached_artwork_name(42, asset_type, 12345)
 
         assert name == f"42_{asset_type}_12345.png"
         assert cached_image_id(name, 42, asset_type) == 12345
 
-    def test_a_hero_keeps_its_plain_name(self):
-        assert cached_artwork_name(42, "hero", 12345) == "42_hero.png"
+    def test_a_hero_named_without_an_id_carries_none(self):
         assert cached_image_id("42_hero.png", 42, "hero") is None
 
     def test_a_wide_grid_without_an_image_id_has_no_name(self):
@@ -367,11 +374,15 @@ class TestCachedArtworkNames:
             ("421_logo_7.png", (421, "logo")),
             ("42_icon.png", (42, "icon")),
             ("42_icon_7.png", (42, "icon")),
+            ("42_hero.png", (42, "hero")),
+            ("42_hero_7.png", (42, "hero")),
         ],
     )
-    def test_a_wide_grid_logo_or_icon_cache_file_names_its_rom_and_asset_type(self, name, slot):
+    def test_a_cache_file_names_its_rom_and_asset_type(self, name, slot):
         assert cached_slot_of(name) == slot
 
-    @pytest.mark.parametrize("name", ["42_hero.png", "042_grid_7.png", "42_grid_7.png.tmp", "42_grid_abc.png", "x.png"])
-    def test_no_other_name_is_a_wide_grid_logo_or_icon_cache_file(self, name):
+    @pytest.mark.parametrize(
+        "name", ["42_cover.png", "042_grid_7.png", "42_grid_7.png.tmp", "42_grid_abc.png", "x.png"]
+    )
+    def test_no_other_name_is_a_cache_file(self, name):
         assert cached_slot_of(name) is None

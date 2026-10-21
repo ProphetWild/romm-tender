@@ -47,6 +47,13 @@ class TestRoundTrip:
 
         assert uow.artwork_slot_outcomes.get(5, ArtworkSlot.LOGO) == record
 
+    def test_the_hero_reads_back_equal(self, uow: SqliteUnitOfWork):
+        _seed_rom(uow, 5)
+
+        uow.artwork_slot_outcomes.save(_set(slot=ArtworkSlot.HERO))
+
+        assert uow.artwork_slot_outcomes.get(5, ArtworkSlot.HERO) == _set(slot=ArtworkSlot.HERO)
+
     def test_each_slot_has_its_own_row(self, uow: SqliteUnitOfWork):
         _seed_rom(uow, 5)
         uow.artwork_slot_outcomes.save(_set(slot=ArtworkSlot.WIDE_GRID))
@@ -111,12 +118,12 @@ class TestTheSchemaHoldsTheShape:
         finally:
             conn.close()
 
-    def test_the_hero_has_no_row(self, db: str):
+    def test_an_unknown_slot_has_no_row(self, db: str):
         with SqliteUnitOfWork(db) as uow:
             _seed_rom(uow, 5)
         conn = sqlite3.connect(db)
         try:
             with pytest.raises(sqlite3.IntegrityError):
-                conn.execute("INSERT INTO artwork_slot_outcomes VALUES (5, 'hero', 'none', 7, 1.0, NULL, NULL)")
+                conn.execute("INSERT INTO artwork_slot_outcomes VALUES (5, 'banner', 'none', 7, 1.0, NULL, NULL)")
         finally:
             conn.close()

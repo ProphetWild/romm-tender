@@ -374,3 +374,85 @@ async def test_ts_only_rescan_revalidates_304_then_second_sync_does_zero_cover_w
     calls_before_run_3 = len(_download_cover_calls(harness))
     await _run_sync(harness, "run-reval-3")
     assert _download_cover_calls(harness)[calls_before_run_3:] == []
+
+
+def _grid_dir(harness) -> pathlib.Path:
+    return harness.tmp_path / "home" / ".steam" / "steam" / "userdata" / "12345" / "config" / "grid"
+
+
+async def test_a_cover_set_in_steam_survives_a_sync_whose_romm_cover_changed(harness):
+    """The cover Steam's own "Set custom artwork" wrote stays, and RomM's change stays pending (#2381 D4, D9)."""
+    _make_grid_resolvable(harness)
+    _seed_library(harness, cover=_COVER_OLD)
+    harness.romm.download_payloads[f"cover:{_COVER_OLD}"] = b"old cover bytes"
+    harness.romm.download_payloads[f"cover:{_COVER_NEW}"] = b"new cover bytes"
+    _dispatcher(harness)._wait_for_unit_complete = _ack_with({"10": 7777})
+    await _run_sync(harness, "run-seed")
+    hand_set = _grid_dir(harness) / "7777p.jpg"
+    hand_set.write_bytes(b"set by hand")
+
+    _seed_library(harness, cover=_COVER_NEW, updated_at="2027-01-01T00:00:00")
+    harness.emit.reset_mock()
+    downloads_before = len(_download_cover_urls(harness))
+
+    preview = await harness.endpoints.sync_preview()
+    assert preview["summary"]["cover_refresh_count"] == 0
+    await _run_sync(harness, "run-cover-set-in-steam")
+
+    assert _download_cover_urls(harness)[downloads_before:] == []
+    assert hand_set.read_bytes() == b"set by hand"
+    assert _cache_file(harness).read_bytes() == b"old cover bytes"
+    with harness.uow_factory() as uow:
+        rom = uow.roms.get(10)
+    assert rom is not None
+    assert rom.cover_source == _COVER_OLD
+    assert [event["cover_refreshes"] for event in _apply_unit_events(harness)] == [[]]
+
+
+async def _seed_with_a_png_set_in_steam(harness) -> pathlib.Path:
+    """Run one sync that binds rom 10 at app 7777, then put a hand-set PNG over Tender's grid cover."""
+    _make_grid_resolvable(harness)
+    _seed_library(harness, cover=_COVER_OLD)
+    harness.romm.download_payloads[f"cover:{_COVER_OLD}"] = b"old cover bytes"
+    harness.romm.download_payloads[f"cover:{_COVER_NEW}"] = b"new cover bytes"
+    _dispatcher(harness)._wait_for_unit_complete = _ack_with({"10": 7777})
+    await _run_sync(harness, "run-seed")
+    grid_cover = _grid_dir(harness) / "7777p.png"
+    grid_cover.write_bytes(b"png set by hand")
+    harness.emit.reset_mock()
+    return grid_cover
+
+
+async def test_a_renamed_game_keeps_a_png_cover_set_in_steam(harness):
+    """A shortcut change that carries no cover change copies nothing over the hand-set cover at commit."""
+    grid_cover = await _seed_with_a_png_set_in_steam(harness)
+    harness.romm.roms[10] = {**harness.romm.roms[10], "name": "Game Renamed", "updated_at": "2027-01-01T00:00:00"}
+
+    await _run_sync(harness, "run-rename")
+
+    assert [len(event["shortcuts"]) for event in _apply_unit_events(harness)] == [1]
+    assert grid_cover.read_bytes() == b"png set by hand"
+    assert _cache_file(harness).read_bytes() == b"old cover bytes"
+
+
+async def test_a_changed_game_with_a_new_romm_cover_keeps_a_png_cover_set_in_steam(harness):
+    """With RomM's cover changed too: no download, no copy, and the new fingerprint is not adopted (#2381 D9)."""
+    grid_cover = await _seed_with_a_png_set_in_steam(harness)
+    harness.romm.roms[10] = {
+        **harness.romm.roms[10],
+        "name": "Game Renamed",
+        "path_cover_large": _COVER_NEW,
+        "updated_at": "2027-01-01T00:00:00",
+    }
+    downloads_before = len(_download_cover_urls(harness))
+
+    await _run_sync(harness, "run-rename-and-cover")
+
+    assert [len(event["shortcuts"]) for event in _apply_unit_events(harness)] == [1]
+    assert _download_cover_urls(harness)[downloads_before:] == []
+    assert grid_cover.read_bytes() == b"png set by hand"
+    assert _cache_file(harness).read_bytes() == b"old cover bytes"
+    with harness.uow_factory() as uow:
+        rom = uow.roms.get(10)
+    assert rom is not None
+    assert (rom.name, rom.cover_source) == ("Game Renamed", _COVER_OLD)
