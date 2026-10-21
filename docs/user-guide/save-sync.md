@@ -240,7 +240,10 @@ picked up by the next launch or by a manual **Sync All Saves Now**; nothing abou
 
 The after-exit sync is skipped the same way while Tender is installing an update from Settings, and the toast says so —
 "Tender is installing an update — saves sync with the next sync that runs". Your local save is untouched, and the first
-sync after the update picks it up.
+sync after the update picks it up. It is skipped as well while a [RetroDECK path migration](retrodeck-path-migration.md)
+is pending, and the toast asks you to deal with the migration first — "Pending RetroDECK migration. Open the Tender menu
+(QAM) to migrate or dismiss." With Tender's **Enable Save Sync** toggle or **Sync after exit** switched off, neither of
+these toasts appears: no sync would have run.
 
 A game that exits while a cleanup of games removed from RomM is running gets no after-exit sync, and neither its
 session's playtime nor its saves are synced — the toast says "Playtime and saves for this session were not synced — a
@@ -257,7 +260,8 @@ RomM lets you turn save sync off for a specific device in its own **device setti
 disable sync for this device there, Tender stops syncing that device's saves and tells you so — a manual sync reports
 "Save sync is disabled for this device on the RomM server", and the after-exit toast says the same. Your local saves are
 left untouched, and the game still launches normally (before-launch sync just skips). Re-enable sync for the device in
-RomM to resume. This is separate from Tender's own **Save Sync** toggle in the QAM — either one being off stops syncing.
+RomM to resume. This is separate from Tender's own **Enable Save Sync** toggle in the QAM — either one being off stops
+syncing.
 
 ## Playtime Tracking
 

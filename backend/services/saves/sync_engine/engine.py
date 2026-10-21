@@ -288,6 +288,10 @@ class SyncEngine:
         """Whether the save-sync feature toggle is on (settings.json)."""
         return save_sync_enabled(self._settings)
 
+    def syncs_after_exit(self) -> bool:
+        """The answer ``SessionPostExitSync.syncs_after_exit`` states (``services/protocols/cross_service.py``)."""
+        return self.is_save_sync_enabled() and sync_after_exit(self._settings)
+
     def get_device_id(self) -> str | None:
         """Server-side device id (None when unregistered).
 
