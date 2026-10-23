@@ -34,6 +34,7 @@ if TYPE_CHECKING:
 
     from domain.live_device_id import LiveDeviceId
     from domain.save_answer import SaveAnswer
+    from domain.save_measure import SaveFileMeasure
     from services.protocols import (
         Clock,
         ComputeSyncActionFn,
@@ -81,6 +82,7 @@ class MatrixOutcome:
     local_hash: str | None
     local_mtime_iso: str | None
     local_size: int | None
+    local_content_size: int | None
     file_state: FileSyncState
     server_candidates: list[dict[str, Any]]
 
@@ -221,56 +223,89 @@ class MatrixExecutor:
         """Update per-file sync tracking on *save_state* after a successful sync op.
 
         Mutates the passed aggregate in memory via its verb methods; the
-        operation entry owns the surrounding write Unit of Work. When the
-        aggregate is brand new (no active slot, default emulator) it seeds the
-        active slot from *default_slot* so the first sync lands in the
-        configured slot. The per-file baseline is recorded via
-        :meth:`RomSaveSyncState.adopt_baseline` — the server response always
-        carries the tracked save id. Its ``content_hash`` (RomM's own digest of
-        the bytes: the save it holds after a download, the bytes it received
-        after an upload) is stored as ``last_sync_server_hash`` so the next sync's
-        identity check can compare server-produced hashes; a response without one
-        records ``None`` and the identity check falls back to parity (#1468).
+        operation entry owns the surrounding write Unit of Work. Seeds the ROM's
+        state through :meth:`RomSaveSyncState.reach_sync_boundary`, measures the
+        local file — its hash, size and content size from one open, and its
+        mtime — and hands the measure to
+        :meth:`RomSaveSyncState.record_transfer`, which composes the baseline; a
+        response or file with nothing to record is logged.
         """
-        if not save_state.system and system:
-            save_state.adopt_system(system)
-        if save_state.active_slot is None and not save_state.slots:
-            save_state.switch_active_slot(default_slot or "autosave")
-        save_state.record_synced_core(core_so, emulator_tag or save_state.emulator or "retroarch")
-
-        now = self._clock.now().isoformat()
+        save_state.reach_sync_boundary(system, default_slot, emulator_tag=emulator_tag, core=core_so)
         local_exists = self._save_file_store.is_file(local_path)
         # RomM-parity content hash (zip-aware) so a zip save's baseline is on the
         # same scheme the matrix compares against server.content_hash — never the
         # whole-archive MD5, which no server content_hash could match (#1457).
-        local_hash = self._save_file_store.content_hash(local_path) if local_exists else ""
-
-        server_save_id = server_response.get("id")
-        if server_save_id is None or not local_hash:
-            # A baseline needs a server save id and a content hash (invariant 1).
+        measure = self._save_file_store.measure(local_path) if local_exists else None
+        mtime = self._save_file_store.get_mtime(local_path) if local_exists else None
+        if not save_state.record_transfer(
+            filename, server_response, measure, mtime, synced_at=self._clock.now().isoformat()
+        ):
             # A sync response missing the id, or a save file that vanished before
             # we could hash it, is genuinely untrackable — log and skip the
             # baseline rather than abort the whole rom-level sync.
             self._logger.warning(
                 "update_file_sync_state: skipping untrackable baseline for %s (id=%r, has_hash=%s)",
                 filename,
-                server_save_id,
-                bool(local_hash),
+                server_response.get("id"),
+                bool(measure and measure.content_hash),
             )
-            return
 
-        save_state.adopt_baseline(
-            filename,
-            tracked_save_id=int(server_save_id),
-            last_sync_hash=local_hash,
-            last_sync_server_hash=server_response.get("content_hash"),
-            last_sync_at=now,
-            last_sync_server_updated_at=server_response.get("updated_at", now) or now,
-            last_sync_server_save_id=server_save_id,
-            last_sync_server_size=server_response.get("file_size_bytes"),
-            last_sync_local_mtime=self._save_file_store.get_mtime(local_path) if local_exists else None,
-            last_sync_local_size=self._save_file_store.get_size(local_path) if local_exists else None,
-        )
+    def adopt_head_as_baseline(
+        self,
+        save_state: RomSaveSyncState,
+        filename: str,
+        head: dict[str, Any],
+        local_path: str,
+        local_hash: str,
+        *,
+        system: str,
+        default_slot: str | None = None,
+    ) -> bool:
+        """Record the local file, identical to *head*, as *filename*'s baseline for that head.
+
+        The adopt a ``Skip(adopt_baseline=True)`` asks for, with no transfer:
+        the baseline is :meth:`RomSaveSyncState.adopt_head`'s, and as the adopt
+        stands in for a download of the same bytes, *save_state* is seeded
+        through :meth:`RomSaveSyncState.reach_sync_boundary` as a download seeds
+        it, except that no core is recorded and the emulator tag stays the one
+        already recorded. *local_hash* is the hash
+        the decision was made on; when the file no longer hashes to it, nothing
+        is recorded and ``False`` is returned, so a file written since the
+        decision is never recorded as the head's bytes. Mutates *save_state* in
+        memory only.
+        """
+        measured = self._measure_unchanged(filename, local_path, local_hash)
+        if measured is None:
+            return False
+        self._record_adopt(save_state, filename, head, measured, system=system, default_slot=default_slot)
+        return True
+
+    def _measure_unchanged(
+        self, filename: str, local_path: str, local_hash: str
+    ) -> tuple[SaveFileMeasure, float] | None:
+        """Measure *local_path*, or ``None`` when it no longer hashes to *local_hash*, the decision's hash."""
+        measure = self._save_file_store.measure(local_path)
+        if measure.content_hash != local_hash:
+            self._log_debug(f"adopt {filename}: the file changed since the decision, nothing recorded")
+            return None
+        return measure, self._save_file_store.get_mtime(local_path)
+
+    def _record_adopt(
+        self,
+        save_state: RomSaveSyncState,
+        filename: str,
+        head: dict[str, Any],
+        measured: tuple[SaveFileMeasure, float],
+        *,
+        system: str,
+        default_slot: str | None,
+    ) -> None:
+        """Seed *save_state* at the boundary (no core; the recorded emulator tag) and record *head*.
+
+        *head* becomes *filename*'s baseline, composed from *measured*.
+        """
+        save_state.reach_sync_boundary(system, default_slot)
+        save_state.adopt_head(filename, head, *measured, synced_at=self._clock.now().isoformat())
 
     # ------------------------------------------------------------------
     # Sync Helpers
@@ -504,14 +539,20 @@ class MatrixExecutor:
         _code, _msg = classify_error(e)
         errors.append(f"{filename}: {_msg}")
 
-    def _build_local_input(self, local_path: str, filename: str) -> dict[str, Any]:
-        """Build the dict shape consumed by ``compute_sync_action``."""
-        exists = self._save_file_store.is_file(local_path)
+    def _build_local_input(
+        self, local_path: str, filename: str, measure: SaveFileMeasure | None, mtime: float | None
+    ) -> dict[str, Any]:
+        """Build the dict shape consumed by ``compute_sync_action``.
+
+        ``size_fixed`` is left out, which the core reads as unknown: nothing
+        Tender reads states whether a save's size is fixed.
+        """
         return {
             "filename": filename,
             "path": local_path,
-            "size": self._save_file_store.get_size(local_path) if exists else None,
-            "mtime": self._save_file_store.get_mtime(local_path) if exists else None,
+            "size": measure.size if measure is not None else None,
+            "content_size": measure.content_size if measure is not None else None,
+            "mtime": mtime,
         }
 
     def build_sync_conflict_entry(
@@ -554,18 +595,36 @@ class MatrixExecutor:
         self,
         action: Skip,
         *,
-        rom_id: int,
-        save_state: RomSaveSyncState,
+        ctx: RomDispatchContext,
         filename: str,
+        local_path: str | None,
         local_hash: str | None,
+        default_slot: str | None,
     ) -> None:
-        if action.adopt_baseline and local_hash is not None:
-            # State-only mutation: write the current local_hash as the baseline
-            # so future runs can detect drift. No I/O, no synced count.
-            self._log_debug(f"do_sync_rom_saves({rom_id}): skip + adopt_baseline {filename} ({action.reason})")
-            self.adopt_baseline_hash(save_state, filename, local_hash)
-        else:
-            self._log_debug(f"do_sync_rom_saves({rom_id}): skip {filename} ({action.reason})")
+        """Execute a ``Skip``: nothing, or an adopt of the head the local file is identical to.
+
+        The file is measured first: one that no longer hashes to what the
+        decision saw is neither acknowledged nor recorded. An adopt that must be
+        acknowledged then confirms the head to RomM, through the retry strategy,
+        and records the baseline from that measure only once that succeeded; a
+        failure propagates to :meth:`_dispatch_sync_action`, which reports it as
+        this file's error with nothing recorded, and the next sync decides
+        again. No transfer either way, so no synced count.
+        """
+        head = action.server_save
+        if not action.adopt_baseline or head is None or local_path is None or local_hash is None:
+            self._log_debug(f"do_sync_rom_saves({ctx.rom_id}): skip {filename} ({action.reason})")
+            return
+        self._log_debug(
+            f"do_sync_rom_saves({ctx.rom_id}): skip + adopt {filename} as save {head.get('id')}"
+            f" (acknowledge={action.acknowledge})"
+        )
+        measured = self._measure_unchanged(filename, local_path, local_hash)
+        if measured is None:
+            return
+        if action.acknowledge:
+            self._retry.with_retry(lambda: self._romm_api.confirm_download(int(head["id"]), ctx.device_id))
+        self._record_adopt(ctx.save_state, filename, head, measured, system=ctx.system, default_slot=default_slot)
 
     def _dispatch_upload(
         self,
@@ -719,10 +778,11 @@ class MatrixExecutor:
             if isinstance(action, Skip):
                 self._dispatch_skip(
                     action,
-                    rom_id=ctx.rom_id,
-                    save_state=ctx.save_state,
+                    ctx=ctx,
                     filename=filename,
+                    local_path=local_path,
                     local_hash=local_hash,
+                    default_slot=options.default_slot,
                 )
                 return None
             if isinstance(action, Upload):
@@ -762,17 +822,6 @@ class MatrixExecutor:
             self._handle_unexpected_error(e, filename, sink.errors)
         return None
 
-    def adopt_baseline_hash(self, save_state: RomSaveSyncState, filename: str, local_hash: str) -> None:
-        """Record ``local_hash`` as the file's ``last_sync_hash`` baseline.
-
-        Used by Skip(adopt_baseline=True) — the algorithm has detected that
-        we've observed an is_current=true situation with local content but no
-        baseline yet. Recording the baseline lets subsequent runs detect
-        offline-edit drift. In-memory mutation only, no I/O; the operation
-        entry owns the surrounding write Unit of Work.
-        """
-        save_state.update_baseline_hash(filename, local_hash)
-
     def iter_matrix_outcomes(
         self,
         server_in_slot: list[dict[str, Any]],
@@ -806,42 +855,15 @@ class MatrixExecutor:
         handled_filenames: set[str] = set()
         for lf in local_files:
             filename = lf["filename"]
-            local_path = lf["path"]
             handled_filenames.add(filename)
-            local_exists = self._save_file_store.is_file(local_path)
-            # RomM-parity content hash (zip-aware) — the kernel compares this to
-            # server.content_hash for its byte-identity checks, so a zip save
-            # must be hashed per-entry, not as the whole archive (#1457).
-            local_hash = self._save_file_store.content_hash(local_path) if local_exists else None
-            file_state = files_state.get(filename, FileSyncState())
-            local_mtime_iso = (
-                datetime.fromtimestamp(self._save_file_store.get_mtime(local_path), tz=UTC).isoformat()
-                if local_exists
-                else None
-            )
-            local_size = self._save_file_store.get_size(local_path) if local_exists else None
             # Group server saves to this file's own canonical target — symmetric
             # with the server-only loop below — so a multi-file save set never
             # cross-contaminates extensions (#1006). Without this, a sibling
             # extension's newer server record would win max(updated_at) and the
             # file would be evaluated/dispatched against the wrong save.
             group = [ss for ss in server_in_slot if local_save_target(ss, rom_name, known_names=save_names) == filename]
-            action = self._compute_sync_action(
-                local_file=self._build_local_input(local_path, filename),
-                server_saves_in_slot=group,
-                files_state=_file_state_to_dict(file_state),
-                device_id=device_id_str,
-                local_hash=local_hash,
-            )
-            yield MatrixOutcome(
-                filename=filename,
-                action=action,
-                local_path=local_path,
-                local_hash=local_hash,
-                local_mtime_iso=local_mtime_iso,
-                local_size=local_size,
-                file_state=file_state,
-                server_candidates=group,
+            yield self._local_outcome(
+                filename, lf["path"], group, files_state.get(filename, FileSyncState()), device_id_str
             )
 
         # Group server saves by canonical local target filename. Server-only
@@ -887,9 +909,47 @@ class MatrixExecutor:
                 local_hash=None,
                 local_mtime_iso=None,
                 local_size=None,
+                local_content_size=None,
                 file_state=file_state,
                 server_candidates=group,
             )
+
+    def _local_outcome(
+        self,
+        filename: str,
+        local_path: str,
+        group: list[dict[str, Any]],
+        file_state: FileSyncState,
+        device_id: str,
+    ) -> MatrixOutcome:
+        """Measure the local file at *local_path* and decide it against its server *group*."""
+        local_exists = self._save_file_store.is_file(local_path)
+        # RomM-parity content hash (zip-aware) — the kernel compares this to
+        # server.content_hash for its byte-identity checks, so a zip save
+        # must be hashed per-entry, not as the whole archive (#1457).
+        measure = self._save_file_store.measure(local_path) if local_exists else None
+        local_hash = measure.content_hash if measure is not None else None
+        local_mtime = self._save_file_store.get_mtime(local_path) if local_exists else None
+        action = self._compute_sync_action(
+            local_file=self._build_local_input(local_path, filename, measure, local_mtime),
+            server_saves_in_slot=group,
+            files_state=_file_state_to_dict(file_state),
+            device_id=device_id,
+            local_hash=local_hash,
+        )
+        return MatrixOutcome(
+            filename=filename,
+            action=action,
+            local_path=local_path,
+            local_hash=local_hash,
+            local_mtime_iso=datetime.fromtimestamp(local_mtime, tz=UTC).isoformat()
+            if local_mtime is not None
+            else None,
+            local_size=measure.size if measure is not None else None,
+            local_content_size=measure.content_size if measure is not None else None,
+            file_state=file_state,
+            server_candidates=group,
+        )
 
     def sync_rom_saves(
         self,
@@ -991,6 +1051,10 @@ class MatrixExecutor:
             # so the pairing that makes a refusal probe nothing survives here too.
             saves_dir=answer_dir,
         ):
+            if outcome.local_hash is not None and outcome.local_content_size is not None:
+                save_state.backfill_content_size(
+                    outcome.filename, local_hash=outcome.local_hash, content_size=outcome.local_content_size
+                )
             origin = "local" if outcome.local_path is not None else "server-only"
             self._log_debug(
                 f"do_sync_rom_saves({rom_id}): {origin} {outcome.filename} -> {type(outcome.action).__name__}"
@@ -1078,4 +1142,5 @@ def _file_state_to_dict(file_state: FileSyncState) -> dict[str, Any]:
         "last_sync_server_size": file_state.last_sync_server_size,
         "last_sync_local_mtime": file_state.last_sync_local_mtime,
         "last_sync_local_size": file_state.last_sync_local_size,
+        "last_sync_content_size": file_state.last_sync_content_size,
     }

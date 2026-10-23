@@ -1,7 +1,7 @@
 # Gavel conformance vectors — vendored
 
 These JSON files are vendored verbatim from [danielcopper/romm-gavel](https://github.com/danielcopper/romm-gavel)
-`vectors/`, at release tag `v1.0.1`. The layout mirrors upstream — one subdirectory per vector family:
+`vectors/`, at release tag `v2.0.0`. The layout mirrors upstream — one subdirectory per vector family:
 
 - `ladder/` — the 409 resolution ladder (`gavel_resolve_upload_conflict`), run against the compiled core by
   `tests/adapters/test_gavel_native.py`.
@@ -22,5 +22,5 @@ There is no submodule and no network access in CI — a vector change must surfa
 Updating means deliberately re-copying the files from the matching upstream `vectors/<family>/` directory and updating
 the release tag above — upstream's `CONTRIBUTING.md` asks clients to pin a tag, not a raw commit, because a changed
 expected value has to arrive as a version bump. Do not reformat the copied files; they must stay byte-for-byte identical
-to upstream. The vendored `backend/native/libgavel-x86_64-linux.so` is pinned to the same release: bump the two
-together, never one alone.
+to upstream. The vendored `backend/native/libgavel-x86_64-linux.so` is pinned to the same release, and so are the
+`ctypes` structs in `backend/adapters/gavel_native.py`: bump the three together, never one alone.

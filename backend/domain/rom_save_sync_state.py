@@ -12,9 +12,9 @@ docs/architecture/database-design.md, "Reserved naming").
 Invariants enforced here:
 
 1. A tracked file (an entry in ``files``) always carries a non-empty hash
-   baseline. :meth:`adopt_baseline` is the strict entry point — it additionally
-   requires a server save id; :meth:`update_baseline_hash` is the relaxed
-   skip-adopt entry point that records only the hash when no server id is known.
+   baseline. :meth:`adopt_baseline`, the only way a file is added, additionally
+   requires a server save id; a stored baseline without one is a hash-only
+   adopt an earlier version recorded.
 2. A non-legacy active slot always has its key present in ``slots`` (the legacy
    ``None`` slot uses the ``""`` key).
 3. ``own_upload_ids`` never grows by mutating ``None`` — :meth:`track_own_upload`
@@ -27,9 +27,12 @@ whole; it has no behaviour of its own.
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from domain._aggregate import cosmic_aggregate
+
+if TYPE_CHECKING:
+    from domain.save_measure import SaveFileMeasure
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,11 +48,16 @@ class FileSyncState:
     ``content_hash`` of that same sync — RomM's own digest of the bytes, stored
     so an identity-vs-server check can compare two server-produced hashes
     instead of relying on our local reimplementation staying byte-for-byte
-    identical to RomM's scheme (#1468). It is ``None`` for a baseline recorded
-    before this field existed or for a hash-only skip-adopt; the identity check
-    falls back to parity there. The two hashes are always recorded together at a
-    single sync event — never re-paired independently — so a stored server hash
-    truthfully corresponds to its ``last_sync_hash``.
+    identical to RomM's scheme (#1468). It is ``None`` where the server save
+    carried no hash, and for a baseline recorded before this field existed or by
+    an earlier version's hash-only adopt; the identity check falls back to
+    parity there. The two hashes are always recorded together at a single sync
+    event — never re-paired independently — so a stored server hash truthfully
+    corresponds to its ``last_sync_hash``.
+
+    ``last_sync_content_size`` is the local file's content size at that sync
+    (:mod:`domain.save_measure`), ``None`` where it was not taken — a baseline
+    recorded before it existed, or one recorded from the server's size alone.
     """
 
     tracked_save_id: int | None = None
@@ -61,6 +69,7 @@ class FileSyncState:
     last_sync_server_size: int | None = None
     last_sync_local_mtime: float | None = None
     last_sync_local_size: int | None = None
+    last_sync_content_size: int | None = None
 
 
 @cosmic_aggregate
@@ -94,6 +103,7 @@ class RomSaveSyncState:
         last_sync_server_size: int | None = None,
         last_sync_local_mtime: float | None = None,
         last_sync_local_size: int | None = None,
+        last_sync_content_size: int | None = None,
     ) -> None:
         """Record ``filename``'s sync baseline, replacing any existing entry.
 
@@ -121,34 +131,114 @@ class RomSaveSyncState:
             last_sync_server_size=last_sync_server_size,
             last_sync_local_mtime=last_sync_local_mtime,
             last_sync_local_size=last_sync_local_size,
+            last_sync_content_size=last_sync_content_size,
         )
 
-    def update_baseline_hash(self, filename: str, last_sync_hash: str) -> None:
-        """Record only ``filename``'s ``last_sync_hash`` baseline, keeping the rest.
+    def reach_sync_boundary(
+        self,
+        system: str,
+        default_slot: str | None,
+        *,
+        emulator_tag: str | None = None,
+        core: str | None = None,
+    ) -> None:
+        """Seed what a sync boundary leaves on a ROM's state.
 
-        The relaxed sibling of :meth:`adopt_baseline` for the skip-adopt case:
-        the matrix observed an ``is_current=true`` local file with no server
-        save id to anchor a full baseline, but still wants to record the hash so
-        a later run can detect offline-edit drift. Updates the hash in place when
-        ``filename`` is already tracked (preserving its other anchors), else
-        creates a minimal :class:`FileSyncState` carrying just the hash.
-
-        ``last_sync_server_hash`` is kept only while the local hash is unchanged
-        (a re-adopt of the same content — the stored server hash still pairs with
-        it, so provenance survives repeated syncs and status reads); it is dropped
-        when the local hash actually changes, since this path has no server hash
-        for the new content and a stale one would pair a fresh ``last_sync_hash``
-        with a server hash from an unrelated sync — a false provenance match
-        (#1468). Raises ``ValueError`` if the hash is empty.
+        Stamps *system* when none is known, switches a brand-new aggregate (no
+        active slot, no slot at all) to *default_slot*, else ``autosave``, and
+        records *core* when one is given and the emulator tag — *emulator_tag*,
+        else the recorded one, else ``retroarch``.
         """
-        if not last_sync_hash:
-            raise ValueError("last_sync_hash is required")
+        if not self.system and system:
+            self.adopt_system(system)
+        if self.active_slot is None and not self.slots:
+            self.switch_active_slot(default_slot or "autosave")
+        self.record_synced_core(core, emulator_tag or self.emulator or "retroarch")
+
+    def record_transfer(
+        self,
+        filename: str,
+        server_save: dict[str, Any],
+        local: SaveFileMeasure | None,
+        local_mtime: float | None,
+        *,
+        synced_at: str,
+    ) -> bool:
+        """Record *filename*'s baseline after a download or an upload landed *server_save*.
+
+        *server_save* is RomM's answer for the save now in step with the local
+        file (the save downloaded, or the one the upload created); its
+        ``content_hash`` is stored verbatim as ``last_sync_server_hash``, and
+        its ``updated_at`` falls back to *synced_at*. *local* is the local
+        file's measure, ``None`` when it is gone. A save without an id, or a
+        local file that is gone or has no hash, has no baseline to record:
+        nothing changes and ``False`` is returned.
+        """
+        server_save_id = server_save.get("id")
+        if server_save_id is None or local is None or not local.content_hash:
+            return False
+        self.adopt_baseline(
+            filename,
+            tracked_save_id=int(server_save_id),
+            last_sync_hash=local.content_hash,
+            last_sync_server_hash=server_save.get("content_hash"),
+            last_sync_at=synced_at,
+            last_sync_server_updated_at=server_save.get("updated_at", synced_at) or synced_at,
+            last_sync_server_save_id=server_save_id,
+            last_sync_server_size=server_save.get("file_size_bytes"),
+            last_sync_local_mtime=local_mtime,
+            last_sync_local_size=local.size,
+            last_sync_content_size=local.content_size,
+        )
+        return True
+
+    def adopt_head(
+        self,
+        filename: str,
+        head: dict[str, Any],
+        local: SaveFileMeasure,
+        local_mtime: float,
+        *,
+        synced_at: str,
+    ) -> None:
+        """Record the local file, identical to *head*, as *filename*'s baseline for that head.
+
+        The adopt a ``Skip(adopt_baseline=True)`` asks for: no transfer, and a
+        baseline composed like a download's — the head's id, its
+        ``content_hash`` verbatim, its size and ``updated_at`` (empty where the
+        head states none, where a download records the sync time), and
+        *local*'s hash, size and content size. Raises ``ValueError`` where
+        :meth:`adopt_baseline` does.
+        """
+        head_id = int(head["id"])
+        self.adopt_baseline(
+            filename,
+            tracked_save_id=head_id,
+            last_sync_hash=local.content_hash,
+            last_sync_server_hash=head.get("content_hash"),
+            last_sync_at=synced_at,
+            last_sync_server_updated_at=head.get("updated_at") or "",
+            last_sync_server_save_id=head_id,
+            last_sync_server_size=head.get("file_size_bytes"),
+            last_sync_local_mtime=local_mtime,
+            last_sync_local_size=local.size,
+            last_sync_content_size=local.content_size,
+        )
+
+    def backfill_content_size(self, filename: str, *, local_hash: str, content_size: int) -> None:
+        """Record the content size of ``filename``'s baseline, taken from the file still holding it.
+
+        Applies only where the baseline records no content size and the local
+        file is unchanged since it (``local_hash`` equals ``last_sync_hash``):
+        those are the bytes the baseline was recorded from, so their content
+        size is the one that sync would have recorded. Anything else is a no-op.
+        """
         existing = self.files.get(filename)
-        if existing is None:
-            self.files[filename] = FileSyncState(last_sync_hash=last_sync_hash)
+        if existing is None or existing.last_sync_content_size is not None:
             return
-        server_hash = existing.last_sync_server_hash if existing.last_sync_hash == last_sync_hash else None
-        self.files[filename] = replace(existing, last_sync_hash=last_sync_hash, last_sync_server_hash=server_hash)
+        if not local_hash or local_hash != existing.last_sync_hash:
+            return
+        self.files[filename] = replace(existing, last_sync_content_size=content_size)
 
     def track_own_upload(self, save_id: int) -> None:
         """Attribute ``save_id`` to an upload we made (idempotent).
