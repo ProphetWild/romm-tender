@@ -697,17 +697,20 @@ download or a progress ratio, because nothing in Tender can fetch it.
 
 Whether one row's requirement is met: the resolver's own verdict over that file, read at the place the launching
 emulator opens it — never presence. A wrong image is there and unmet; a file the resolver could not compare is there and
-withheld; for a **folder declaration** the verdict is what the folder _holds_, and RetroDECK links LRPS2's `pcsx2/bios`
-onto the BIOS root, so the folder is there on every install. The rows a launch reads are the **launching emulator**'s
-own requirements, each at the place the resolver names for that emulator: with YabaSanshiro launching Saturn,
-`saturn_bios.bin` is the file directly under the BIOS root, whatever lies under Kronos's `kronos/`. Every statement
-below is scoped to a **required by the launching emulator** row first, and the library's own held/offered ratio is a
-third axis again, counting what the RomM library holds rather than what is met.
+withheld. A **folder declaration** is one row per file of it — each library file the resolver recognises for the folder,
+and each file lying in it that the resolver makes a statement about — each with the resolver's verdict over that file,
+and the folder's own verdict — what it _holds_ — counts once as one requirement; RetroDECK links LRPS2's `pcsx2/bios`
+onto the BIOS root, so the folder is there on every install, and where nothing lies in it and no library file is
+recognised for it, one row stands for the folder with that verdict, until a file of the folder has a row of its own. The
+rows a launch reads are the **launching emulator**'s own requirements, each at the place the resolver names for that
+emulator: with YabaSanshiro launching Saturn, `saturn_bios.bin` is the file directly under the BIOS root, whatever lies
+under Kronos's `kronos/`. Every statement below is scoped to a **required by the launching emulator** row first, and the
+library's own held/offered ratio is a third axis again, counting what the RomM library holds rather than what is met.
 
 - **met** — raises `required_downloaded`, the "in place" a sentence counts. The resolver established that the right file
   is where the emulator opens it — or, for a declared folder, that an image inside passes the emulator's own check. A
-  library file no emulator declares is no requirement of anything, so the resolver has no verdict for it; its row says
-  only whether Tender's own look found it.
+  library file no emulator declares is no requirement of anything, so the resolver has no verdict for it, and its row
+  has none; it says only whether this platform's firmware store holds it.
 - **unmet** — the resolver showed the requirement is not met: the file is absent, the bytes are the wrong image, the
   emulator refuses it on its size, or something of the wrong shape is at the place. Worded with which of these it is.
 - **withheld** — the resolver established neither: the file could not be recognised, read or compared, a folder stands
@@ -722,8 +725,8 @@ alone.
 ### Byte reading (firmware): what became of a row's bytes
 
 What the reading DID to a declared file, carried on the row beside its **verdict** in the resolver's own vocabulary and
-never re-derived here. It answers a different question: the verdict says whether the requirement is met, this says what
-was done to establish it.
+never re-derived here — but for `rejected`, Tender's own word, read off a folder file's verdict (below). It answers a
+different question: the verdict says whether the requirement is met, this says what was done to establish it.
 
 It is needed because a withheld verdict has several causes and one of them is not a withholding at all. A file the
 emulator **read and does not recognise** was checked — DuckStation boots such an image and calls it an unknown BIOS — so
@@ -731,13 +734,16 @@ the verdict stays withheld while "could not be checked" is simply untrue of it. 
 not come back**, which is a statement about Tender's own read and no evidence the launch cannot read it, and one the
 emulator **refuses** on its size before reading a byte, which arrives with the verdict already unmet and needs the
 reason rather than a verdict, and one that is there and is **not the image** the emulator expects, which arrives unmet
-too and is worded as the wrong file rather than as one that is missing. Everything else — the bytes matched, nothing
-asked — leaves the row to the axes it always had.
+too and is worded as the wrong file rather than as one that is missing. A file in a declared folder the emulator's own
+test read and **turned down** is a wrong file too, worded as not an image the emulator accepts; that word, `rejected`,
+is Tender's own, since the resolver states it only as the file's verdict (#2191 D41). Everything else — the bytes
+matched, nothing asked — leaves the row to the axes it always had.
 
 Where each of these is worded is `frontend/src/utils/biosFileNote.ts`, the one place both surfaces derive a row's note
 from. The platform pane's **Contents** column words every value, from the same module (`contentsWords`): right file,
-wrong file, refused, not comparable, not recognised, could not be read, not checked, not established. The mark in its
-`On disk` cell stays the verdict alone, so the two columns explain each other.
+wrong file (not the image expected, or not an image accepted), refused, not comparable, not recognised, could not be
+read, not checked, not established. The mark in its `On disk` cell stays the verdict alone, so the two columns explain
+each other.
 
 ### One-of group (firmware): met / partial / unmet / unknown
 
@@ -855,8 +861,13 @@ counting every row the library holds.
 
 ### Firmware store
 
-Tender's own store of BIOS files, each held once and reaching each emulator source through a link at the place emu-atlas
-names ([ADR-0042](docs/adr/0042-tender-takes-emulator-answers-starts-emulators-and-keeps-its-own-store.md)).
+Tender's own store of the BIOS files it downloads from RomM, in `Tender/bios/<platform>/` under each file's name in
+RomM, reaching each emulator source through a link at the place emu-atlas names
+([ADR-0042](docs/adr/0042-tender-takes-emulator-answers-starts-emulators-and-keeps-its-own-store.md)). A file is held
+once per platform it was downloaded for, never once for the whole machine (#2191 D3). A **link** of Tender's is an
+absolute symlink at such a place, pointing at a store file; it is Tender's own when it points at a store file Tender has
+recorded. _Avoid_: placement for the link itself (a placement is the resolver's answer about where an emulator opens a
+file).
 
 ### Safely-bakeable
 

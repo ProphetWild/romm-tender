@@ -88,14 +88,14 @@ def _set_user_version(db_path: str, version: int) -> None:
 # + 031_add_platform_skip_fetch_start_and_checksum
 # + 032_add_collection_skip_fetch_start_and_checksum
 # + 033_add_artwork_slot_choices + 034_clear_firmware_cache_filed_by_folder
-# + 035_add_artwork_slot_handovers).
-_SHIPPED_VERSION = 35
+# + 035_add_artwork_slot_handovers + 036_add_firmware_store).
+_SHIPPED_VERSION = 36
 
 # Tables after every shipped migration: the v1 set plus 006's play-session outbox,
 # 012's per-platform completion stamp, 019's per-collection completion stamp,
 # 024's answered save directories, 027's artwork slot outcomes, 033's artwork
-# slot choices and 035's artwork slot hand-overs, with 018 renaming the save-sync scalar table rom_save_states ->
-# rom_save_sync_states.
+# slot choices, 035's artwork slot hand-overs and 036's firmware store and links,
+# with 018 renaming the save-sync scalar table rom_save_states -> rom_save_sync_states.
 _SHIPPED_TABLES = (_V1_TABLES - {"rom_save_states"}) | {
     "rom_save_sync_states",
     "rom_playtime_sessions",
@@ -105,6 +105,8 @@ _SHIPPED_TABLES = (_V1_TABLES - {"rom_save_states"}) | {
     "artwork_slot_outcomes",
     "artwork_slot_choices",
     "artwork_slot_handovers",
+    "firmware_store",
+    "firmware_links",
 }
 
 
@@ -2425,3 +2427,81 @@ class Test035AddArtworkSlotHandovers:
         finally:
             conn.close()
         assert left == (0,)
+
+
+class Test036AddFirmwareStore:
+    """036 — the firmware store and its link records, and the cached listing's checksums (#2191)."""
+
+    def test_a_cached_row_without_a_checksum_is_gone_and_the_column_is_there(self, tmp_path: Path):
+        db_path = str(tmp_path / "romm_sync.db")
+        apply_migrations(db_path, str(_only_migrations_through(tmp_path, 35)))
+        conn = sqlite3.connect(db_path, isolation_level=None)
+        try:
+            conn.execute(
+                "INSERT INTO firmware_cache (id, name, platform_slug, file_size_bytes, cached_at) "
+                "VALUES (1, 'scph5501.bin', 'psx', 524288, 1000.0)"
+            )
+        finally:
+            conn.close()
+
+        apply_migrations(db_path)
+
+        conn = sqlite3.connect(db_path)
+        try:
+            count = conn.execute("SELECT COUNT(*) FROM firmware_cache").fetchone()[0]
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(firmware_cache)")}
+        finally:
+            conn.close()
+        assert count == 0
+        assert "md5_hash" in columns
+
+    def test_the_store_and_link_tables_start_empty(self, tmp_path: Path):
+        db_path = str(tmp_path / "romm_sync.db")
+
+        apply_migrations(db_path)
+
+        conn = sqlite3.connect(db_path)
+        try:
+            counts = [
+                conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                for table in ("firmware_store", "firmware_links")
+            ]
+        finally:
+            conn.close()
+        assert counts == [0, 0]
+
+    def test_a_store_file_without_a_checksum_is_refused(self, tmp_path: Path):
+        db_path = str(tmp_path / "romm_sync.db")
+        apply_migrations(db_path)
+
+        conn = sqlite3.connect(db_path, isolation_level=None)
+        try:
+            with pytest.raises(sqlite3.IntegrityError):
+                conn.execute(
+                    "INSERT INTO firmware_store (platform_slug, file_name, folder, md5, size, downloaded_at) "
+                    "VALUES ('psx', 'scph5501.bin', '/home/deck/Tender', '', 1, 'now')"
+                )
+        finally:
+            conn.close()
+
+    def test_a_database_at_the_artwork_rung_applies_only_this_one(self, tmp_path: Path):
+        """The device's path: its database is at 035 (artwork hand-overs) when this rung arrives."""
+        db_path = str(tmp_path / "romm_sync.db")
+        apply_migrations(db_path, str(_only_migrations_through(tmp_path, 35)))
+        conn = sqlite3.connect(db_path, isolation_level=None)
+        try:
+            _insert_rom(conn, 1, 100)
+            conn.execute("INSERT INTO artwork_slot_handovers VALUES (1, 'logo', 4242, 'ab', 2.5, NULL)")
+        finally:
+            conn.close()
+
+        apply_migrations(db_path)
+
+        conn = sqlite3.connect(db_path)
+        try:
+            handovers = conn.execute("SELECT COUNT(*) FROM artwork_slot_handovers").fetchone()[0]
+        finally:
+            conn.close()
+        assert _user_version(db_path) == 36
+        assert {"firmware_store", "firmware_links"} <= _tables(db_path)
+        assert handovers == 1

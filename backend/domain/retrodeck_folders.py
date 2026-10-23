@@ -31,8 +31,8 @@ RETRODECK_NOT_INSTALLED = "retrodeck_not_installed"
 RETRODECK_SWITCHED_OFF = "retrodeck_switched_off"
 NO_ROM_FOLDER = "no_rom_folder"
 NO_ROM_ROOT = "no_rom_root"
+NO_BIOS_ROOT = "no_bios_root"
 ROM_ROOT_MISSING = "rom_root_missing"
-BIOS_FOLDER_MISSING = "bios_folder_missing"
 RETRODECK_UNANSWERED = "retrodeck_unanswered"
 # The panel words this one from the finding it carries, with the sentence the
 # finding's notice shows, so the press and the notice say the same thing.
@@ -40,7 +40,6 @@ RETRODECK_FINDING = "retrodeck_finding"
 
 # What a refused download is for, which names it in the sentence.
 GAME_DOWNLOAD = "Downloads"
-BIOS_DOWNLOAD = "BIOS downloads"
 
 
 class FolderRefused(DomainRefused):
@@ -105,15 +104,6 @@ def rom_root_missing(path: str) -> FolderRefused:
     )
 
 
-def bios_folder_missing(path: str) -> FolderRefused:
-    """The refusal of a BIOS download while RetroDECK's BIOS folder *path*, outside its own folder, does not exist."""
-    return FolderRefused(
-        BIOS_FOLDER_MISSING,
-        f"RetroDECK's BIOS folder {path} does not exist. If it is on an SD card or another drive, insert it.",
-        path=path,
-    )
-
-
 def uninstall_not_installed() -> FolderRefused:
     """The refusal of a removal of installed content where no RetroDECK is detected to bound it."""
     return FolderRefused(RETRODECK_NOT_INSTALLED, "Uninstalling needs RetroDECK, which is not installed.")
@@ -122,6 +112,11 @@ def uninstall_not_installed() -> FolderRefused:
 def moving_not_installed() -> FolderRefused:
     """The refusal of the move code's migrate press where no RetroDECK is detected."""
     return FolderRefused(RETRODECK_NOT_INSTALLED, "Moving needs RetroDECK, which is not installed.")
+
+
+def no_bios_root() -> FolderRefused:
+    """The bound of a removal of an older BIOS download where a detected RetroDECK names no BIOS folder."""
+    return FolderRefused(NO_BIOS_ROOT, "RetroDECK names no BIOS folder.")
 
 
 def no_rom_root() -> FolderRefused:

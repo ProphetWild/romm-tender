@@ -61,6 +61,8 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
+    from domain.source_roots import SourceRoots
+
 WANTED_NEEDED = "needed"
 WANTED_OPTIONAL = "optional"
 WANTED_NOT_NEEDED = "not_needed"
@@ -90,6 +92,13 @@ SYSTEM_FIRMWARE_STATES = (
 # folder to create rather than a file to fetch.
 DECLARED_FILE = "file"
 DECLARED_DIRECTORY = "directory"
+
+# What the resolver's packaged table says a pinned checksum is over: the file's
+# bytes whole, or one packaging of an archive whose contents can be right under
+# another checksum. Spelled as the resolver spells them, and held equal to its
+# constants by ``tests/adapters/test_atlas_firmware.py``.
+IDENTITY_FILE = "file"
+IDENTITY_ARCHIVE = "archive"
 
 # How the emulator finds the firmware it boots — the resolver's ``locating``,
 # world knowledge about the emulator's code rather than a reading of this
@@ -130,6 +139,14 @@ CAVEAT_PATH_INACCESSIBLE = "firmware-path-inaccessible"
 # keeps knows. Spelled as the resolver spells them.
 CHECKED_UNREAD = "unread"
 CHECKED_UNRECOGNISED = "unrecognised"
+# A file's contents matched what the emulator expects (``verified``), and
+# nothing could be compared (``unknown``). Spelled as the resolver spells them.
+CHECKED_VERIFIED = "verified"
+CHECKED_UNKNOWN = "unknown"
+# Tender's own word, never the resolver's: a file in a declared folder the
+# emulator's own test read and rejected, which the resolver states only as the
+# file's verdict.
+CHECKED_REJECTED = "rejected"
 
 # The codes with which the resolver states that a search identified a file by
 # its contents: an image its table names, and one the emulator's own test
@@ -159,6 +176,26 @@ class FolderVerdict:
 
     satisfied: bool | None
     images: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class FolderFile:
+    """One file the resolver read inside a declared folder, and its verdict over it.
+
+    ``path`` is the entry the emulator lists, which for a link is the link and
+    not the file it leads to; ``target`` is where such a link leads, ``None``
+    for a plain file. ``satisfied`` is the resolver's own: ``True`` for an image
+    the emulator's own test accepts, ``False`` for a file it read and rejects,
+    ``None`` where its reads disagree or did not come back. ``md5`` and
+    ``description`` are what the read stated about the bytes, each ``None``
+    where it stated nothing.
+    """
+
+    path: str
+    satisfied: bool | None
+    target: str | None = None
+    md5: str | None = None
+    description: str | None = None
 
 
 @dataclass(frozen=True)
@@ -382,20 +419,28 @@ class FirmwareGroup:
 class FirmwarePlacement:
     """One firmware file the machine asks for: where it goes and who wants it.
 
-    ``relative_path`` is the location the emulator declared, relative to the
-    firmware root, so a consumer joins it under the BIOS directory it owns
-    rather than trusting an absolute path from outside. ``None`` when there is
-    no location under that root to honour — a standalone emulator keeping its
-    firmware in its own XDG tree — and the consumer then falls back to its own
-    layout.
+    ``place`` is the absolute path the emulator opens the file at, and the one
+    a link of Tender's goes to: where the declared place is itself a link
+    leading out of the firmware root, the link, never the file it leads to.
+    ``None`` only where the answer names no place at all. ``relative_path`` is
+    the same place as the emulator declared it below the firmware root, the
+    folder a person placing the file by hand needs; ``None`` for a place
+    outside that root — a standalone emulator's own folder (Cemu's
+    ``keys.txt``) — which is still a place, and still has its ``place``.
+
+    ``identity_md5`` and ``identity_kind`` are what the resolver's packaged
+    table pins for the file, the checksum a library file is matched against
+    (:mod:`domain.firmware_match`): ``kind`` is ``file`` for bytes compared
+    whole and ``archive`` for a packaging whose checksum says nothing about its
+    contents; both ``None`` where no table covers the file.
 
     ``present``, ``caveats`` and ``folder`` are what the resolver read AT that
-    destination, and a consumer takes them from here rather than probing the
-    path a second time: the resolver follows the symlinks a distribution
-    strings through the firmware tree, while a bare existence check answers
-    about whatever the consumer's own join happens to name. ``present`` is
-    three-valued because "could not look" is not "not there"; ``caveats`` names
-    what else the reading found there, in the resolver's stable codes.
+    place, and a consumer takes them from here rather than probing the path a
+    second time: the resolver follows the symlinks a distribution strings
+    through the firmware tree, and judges the bytes behind a link where they
+    lie. ``present`` is three-valued because "could not look" is not "not
+    there"; ``caveats`` names what else the reading found there, in the
+    resolver's stable codes.
 
     ``folder`` is the verdict about what a **declared folder** holds, and it is
     ``None`` for every file declaration. On a folder declaration it always
@@ -410,12 +455,6 @@ class FirmwarePlacement:
     form it derives from its own identifier, never one mapped here. ``None``
     claims nothing: the resolver states it only where it established the
     provenance.
-
-    All four go silent together with ``relative_path``: with no location to
-    honour, the consumer's fallback layout is a different place from the one
-    that was read, and a reading carried across would describe somewhere the
-    consumer will never write. ``declared_kind`` does not, because it is a
-    property of the declaration rather than of the destination.
 
     ``declaration`` is the resolver's own word for HOW the entry ``description``
     came from stated what it wants — ``read`` off a libretro core's own ``.info``
@@ -442,8 +481,13 @@ class FirmwarePlacement:
 
     ``missing_configured_image`` is set where the emulator the reading came
     from is configured to open a file in this folder that is not there
-    (:class:`MissingConfiguredImage`). It goes silent with the destination half,
-    and it is never a verdict either.
+    (:class:`MissingConfiguredImage`). It is never a verdict either.
+
+    On a folder declaration, ``folder_md5s`` are the checksums the packaged
+    table files under the folder, which a library file is recognised as valid
+    for it by, and ``folder_files`` what the resolver stated about each file it
+    read inside the folder (:class:`FolderFile`). Both are empty on a file
+    declaration.
 
     ``wants`` is never empty: a placement exists because at least one emulator
     declared the file, and a placement without an owning emulator is exactly the
@@ -478,6 +522,11 @@ class FirmwarePlacement:
     missing_configured_image: MissingConfiguredImage | None = None
     emulator: str | None = None
     satisfied: bool | None = None
+    place: str | None = None
+    identity_md5: str | None = None
+    identity_kind: str | None = None
+    folder_md5s: frozenset[str] = frozenset()
+    folder_files: tuple[FolderFile, ...] = ()
 
     @property
     def required_by_any(self) -> bool:
@@ -493,10 +542,10 @@ class FirmwarePlacement:
     def place_unreadable(self) -> bool:
         """Could the resolver not look at the place this file goes?
 
-        Such a place is never downloaded into: a download could
-        overwrite a file nobody could see, and a place the resolver cannot read
-        is usually one the emulator cannot read either. Once it is readable
-        again, the verdict follows by itself and so does the download.
+        Such a place gets no link: nobody could see what lies there, and a
+        place the resolver cannot read is usually one the emulator cannot read
+        either. Once it is readable again, the verdict follows by itself and so
+        does the link.
         """
         return CAVEAT_PATH_INACCESSIBLE in self.caveats
 
@@ -545,6 +594,22 @@ class FirmwareCatalogue:
     ``groups`` are the one-of requirements the answer states, per emulator
     (:meth:`groups_for`). Every option's file is a placement as well; a group
     is the requirement over them, which no placement can carry.
+
+    ``source`` is the kind of emulator source the answer came from, and
+    ``roots`` that source's root folders with where the resolver took each from
+    (:mod:`domain.source_roots`), which decide whether a place below one may be
+    used. Both ``None`` for a reading that did not happen.
+
+    ``not_installed`` are the emulators the source's own launch reading states
+    are not installed (the resolver's ``not-installed``). A link goes only to
+    the place of an emulator outside it (:meth:`linkable`): a packaged card
+    states what an emulator wants whether or not it is installed, and an
+    emulator that could not be established is not ruled out.
+
+    ``sealed`` marks an answer read beside a sealed emulator catalogue
+    (EmuDeck's), only ever for placing links: its places are where a file
+    goes, but its list may leave an emulator out, so it never decides that a
+    link is unwanted.
     """
 
     placements: tuple[FirmwarePlacement, ...]
@@ -553,6 +618,14 @@ class FirmwareCatalogue:
     caveats: tuple[str, ...] = ()
     emulator_verdicts: Mapping[str, CoreFirmwareVerdict] = field(default_factory=dict)
     groups: tuple[FirmwareGroup, ...] = ()
+    source: str | None = None
+    roots: SourceRoots | None = None
+    not_installed: frozenset[str] = frozenset()
+    sealed: bool = False
+
+    def linkable(self) -> tuple[FirmwarePlacement, ...]:
+        """The placements a link may go to: every one but those of an emulator stated not installed."""
+        return tuple(placement for placement in self.placements if placement.emulator not in self.not_installed)
 
     def verdict_for(self, emulator: str | None) -> CoreFirmwareVerdict | None:
         """What was recorded about *emulator*, or ``None`` where nothing was.
@@ -575,9 +648,8 @@ class FirmwareCatalogue:
     def by_file_name(self) -> dict[str, FirmwarePlacement]:
         """The placements indexed by file name, the first declarer of each name standing for it.
 
-        The index for a caller with no launching emulator to scope to — one
-        firmware id, the home migration's sweep. A caller that has one asks
-        :meth:`placements_for` instead.
+        The index for a caller with no launching emulator to scope to. A caller
+        that has one asks :meth:`placements_for` instead.
         """
         index: dict[str, FirmwarePlacement] = {}
         for placement in self.placements:
@@ -624,6 +696,18 @@ class FirmwareCatalogue:
         if not self.resolved or emulator is None:
             return False
         return emulator in self.emulator_verdicts and emulator not in self.unread_emulators
+
+
+@dataclass(frozen=True)
+class SourceCatalogues:
+    """One system's demand in each enabled source: the catalogues read, in the user's order, and the sources not read.
+
+    A source is not read where its reading raised or named no root. Nothing
+    it wants is known then, so nothing it might want may be ruled out.
+    """
+
+    read: tuple[FirmwareCatalogue, ...] = ()
+    unread: frozenset[str] = frozenset()
 
 
 def classify_wanted(placement: FirmwarePlacement | None, complete: bool) -> str:

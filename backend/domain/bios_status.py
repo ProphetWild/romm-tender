@@ -31,7 +31,7 @@ them, chosen by the disc's region.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from typing import TYPE_CHECKING, Any
 
 from domain.firmware_groups import GROUP_MET, GROUP_UNKNOWN, GROUP_UNMET, fetched_as_required
@@ -182,6 +182,25 @@ class BiosFileEntry:
     # a library file no emulator claims. A surface shows a row with its own
     # emulator, and an unclaimed one in the library's own section.
     declared_by: str | None = None
+    # Tender's own facts about the row (:mod:`domain.firmware_rows`): the
+    # library file that fills it, this platform's store copy that does, what
+    # lies at its place, why no link may go there, and whether "Replace…" is
+    # offered. ``in_folder`` is the folder declaration a row stands in, for one
+    # file inside the folder an emulator lists. ``linked_for_name`` is the name
+    # the platform ``linked_for`` slugs is shown under.
+    library: dict[str, Any] | None = None
+    store_file: str | None = None
+    link: str | None = None
+    linked_for: str | None = None
+    linked_for_name: str | None = None
+    place_refusal: dict[str, Any] | None = None
+    replace_offered: bool = False
+    in_folder: str | None = None
+
+    def with_changes(self, **changes: Any) -> BiosFileEntry:
+        """This entry with *changes*, every other field kept."""
+        kept = {field.name: getattr(self, field.name) for field in fields(self)}
+        return BiosFileEntry(**(kept | changes))
 
 
 @dataclass(frozen=True)
@@ -328,7 +347,7 @@ def build_file_entry(
         one_of=active.one_of,
         fetch_for_required=fetched_as_required(placement, launching_emulator, _groups_of(groups, launching_emulator)),
         supplied_by=placement.supplied_by if placement is not None else None,
-        satisfied=_row_verdict(placement, downloaded, dest),
+        satisfied=_row_verdict(placement),
         declared_kind=placement.declared_kind if placement is not None else DECLARED_FILE,
         declaration=placement.declaration if placement is not None else None,
         caveats=placement.caveats if placement is not None else (),
@@ -418,7 +437,7 @@ def _active_core_answer(cores: Mapping[str, dict[str, Any]], launching_emulator:
     )
 
 
-def _row_verdict(placement: FirmwarePlacement | None, downloaded: bool, dest: str | None) -> bool | None:
+def _row_verdict(placement: FirmwarePlacement | None) -> bool | None:
     """Is this row's requirement met? ``None`` where nothing established it.
 
     Wherever an emulator declared the file it is the resolver's own verdict over
@@ -429,48 +448,14 @@ def _row_verdict(placement: FirmwarePlacement | None, downloaded: bool, dest: st
     the folder HOLDS, never by the folder being there.
 
     A library file no emulator declared is no requirement of anything, so the
-    resolver has no verdict to give; there the row says only whether Tender's
-    own look found it (``FirmwareDemand.is_downloaded``), and where there is no
-    *dest* to look at, because no download may land in the BIOS folder, that is
-    withheld too.
+    resolver has no verdict to give, and the verdict is withheld.
     """
-    if placement is not None:
-        return placement.satisfied
-    if dest is None:
-        return None
-    return downloaded
+    return placement.satisfied if placement is not None else None
 
 
-def collect_firmware_status(
-    items: list[dict[str, Any]],
-    placements: Mapping[str, FirmwarePlacement],
-    complete: bool,
-    launching_emulator: str | None,
-    groups: tuple[FirmwareGroup, ...] = (),
-) -> tuple[BiosFileEntry, ...]:
-    """Build BiosFileEntry objects for a list of pre-resolved firmware items.
-
-    Each item must have keys: file_name, downloaded, dest; ``on_server``
-    defaults to ``True`` for the items that came off the RomM listing.
-    ``groups`` spans the whole answer and is read per row, so one emulator's
-    group answers the same way on every file it lists.
-    """
-    return tuple(
-        build_file_entry(
-            item["file_name"],
-            item["downloaded"],
-            item["dest"],
-            placements.get(item["file_name"]),
-            complete,
-            launching_emulator,
-            on_server=item.get("on_server", True),
-            groups=groups,
-        )
-        for item in items
-    )
-
-
-def count_required(files: tuple[BiosFileEntry, ...], groups: tuple[GroupVerdict, ...] = ()) -> tuple[int, int]:
+def count_required(
+    files: tuple[BiosFileEntry, ...], groups: tuple[GroupVerdict, ...] = (), folders: tuple[bool | None, ...] = ()
+) -> tuple[int, int]:
     """``(required, of those met)`` for the emulator the game will launch with.
 
     Each of its one-of *groups* is ONE requirement here, met only where every
@@ -488,13 +473,19 @@ def count_required(files: tuple[BiosFileEntry, ...], groups: tuple[GroupVerdict,
     in place only where the resolver judges it met, so a wrong image
     or one it could not compare is in the first number and not the second. A
     row nothing could judge is :func:`count_required_withheld`'s.
+
+    *folders* are the verdicts over the folders the emulator requires and
+    lists. A folder is ONE requirement whatever it holds, and its files are
+    rows of their own that count for nothing here.
     """
     required = [f for f in files if f.required_by_active]
-    met = sum(1 for group in groups if group.state == GROUP_MET)
-    return len(required) + len(groups), sum(1 for f in required if f.satisfied) + met
+    met = sum(1 for group in groups if group.state == GROUP_MET) + sum(1 for folder in folders if folder is True)
+    return len(required) + len(groups) + len(folders), sum(1 for f in required if f.satisfied) + met
 
 
-def count_required_withheld(files: tuple[BiosFileEntry, ...], groups: tuple[GroupVerdict, ...] = ()) -> int:
+def count_required_withheld(
+    files: tuple[BiosFileEntry, ...], groups: tuple[GroupVerdict, ...] = (), folders: tuple[bool | None, ...] = ()
+) -> int:
     """How many of the launching emulator's requirements nothing could judge.
 
     The third number beside :func:`count_required`'s two, and the one that keeps
@@ -504,7 +495,8 @@ def count_required_withheld(files: tuple[BiosFileEntry, ...], groups: tuple[Grou
     established. A group whose state is ``unknown`` is one such requirement.
     """
     withheld_groups = sum(1 for group in groups if group.state == GROUP_UNKNOWN)
-    return sum(1 for f in files if f.required_by_active and f.satisfied is None) + withheld_groups
+    withheld_folders = sum(1 for folder in folders if folder is None)
+    return sum(1 for f in files if f.required_by_active and f.satisfied is None) + withheld_groups + withheld_folders
 
 
 def region_decides(verdict: CoreFirmwareVerdict | None, groups: Iterable[FirmwareGroup]) -> bool:

@@ -18,13 +18,14 @@ if TYPE_CHECKING:
     from collections.abc import Iterable
 
     from domain.emulator_sources import ArrangedSource, SourceReport, SourcesReading
-    from domain.firmware_wants import FirmwareCatalogue
+    from domain.firmware_wants import FirmwareCatalogue, SourceCatalogues
     from domain.platform_system import PlatformIds, PlatformSystem
     from domain.retrodeck_folders import FolderRefused, MoveRoots
     from domain.rom_install import RomInstall
     from domain.save_answer import SaveAnswer
     from domain.savestate_location import NoSavestates, SavestateLocation
     from domain.shortcut_data import EmulatorInvocation
+    from domain.source_roots import SourceRoots
     from domain.tender_folder import SourceRomFolders
 
 
@@ -84,16 +85,23 @@ class PlatformSystems(Protocol):
         """The system a game is asked about: its install record's where it is installed, else the platform's."""
         ...
 
+    def listed_platforms(self) -> frozenset[str] | None:
+        """Every platform whose ids are kept, by slug; ``None`` where no listing was ever kept. Reads nothing from RomM.
+
+        Each platform RomM listed at the last sync, and every one kept since —
+        a listing read for a platform with no ids keeps the whole listing.
+        """
+        ...
+
 
 class FirmwareResolver(Protocol):
     """Read what every installed libretro core wants, live off the machine.
 
     The whole-machine question, and it is the right one only where the caller
     has **no platform to name**: the RetroDECK-home migration's untracked-BIOS
-    sweep, and the download of one firmware id. It enumerates installed cores,
-    so it carries no standalone emulator at all and can never say what one
-    wants — a platform-scoped answer asks :class:`FirmwarePlatformResolver`
-    instead.
+    sweep. It enumerates installed cores, so it carries no standalone emulator
+    at all and can never say what one wants — a platform-scoped answer asks
+    :class:`FirmwarePlatformResolver` instead.
 
     Implementations never raise and never guess: a reading that fails comes back
     as a catalogue with no placements and ``resolved`` clear, which classifies
@@ -124,35 +132,53 @@ class FirmwarePlatformResolver(Protocol):
     :class:`FirmwareResolver`.
     """
 
-    def __call__(self, system: str) -> FirmwareCatalogue: ...
+    def __call__(self, system: str) -> FirmwareCatalogue:
+        """*system*'s demand in the emulator source that answers for it."""
+        ...
+
+    def every_source(self, system: str) -> SourceCatalogues:
+        """*system*'s demand in each enabled source, in the user's order, and the sources that could not be read."""
+        ...
+
+    def source_roots(self) -> dict[str, SourceRoots | None]:
+        """Every detected source's roots, switched on or off, by kind; ``None`` where they could not be asked."""
+        ...
+
+
+class FirmwareIdentityProvider(Protocol):
+    """Ask what a piece of firmware content is, by its MD5 — the resolver's identification, a slow question per file.
+
+    Answers every name the resolver knows the content under, empty where it
+    does not know it, and ``None`` where nothing could be asked.
+    """
+
+    def __call__(self, md5: str) -> tuple[str, ...] | None: ...
 
 
 class RetroDeckFolders(Protocol):
     """RetroDECK's folders, each the resolver's answer — or the refusal that stands in for one.
 
-    A download asks :meth:`download_folder` or :meth:`bios_download_folder`,
-    which refuse unless RetroDECK is detected and switched on, the resolver
+    A download asks :meth:`download_folder`, which refuses unless RetroDECK is detected and switched on, the resolver
     did more than assume the root the folder lies in, the home RetroDECK's
     settings name is not missing, and the folder can be created below a root
     that exists. A removal of a game's installed content is bounded by its
     system's own folder, which :meth:`rom_folders` answers for several systems
     at once; it refuses where :meth:`rom_root` cannot be named, in the words an
     uninstall says, and refuses one system alone where RetroDECK names no
-    folder for it. :meth:`bios_folder` and :meth:`saves_root` answer ``None``
-    where RetroDECK is not detected or names none. Every removal question
-    refuses where the resolver only assumed its root, and none minds the
-    switch. Where detecting the sources, or asking about RetroDECK's roots,
-    raised, every question refuses — a download only once RetroDECK is not
-    switched off, which it says first; a raise on a system's own folder
-    refuses only that system's folder. A refusal comes back as a value; the
-    caller that needed the folder raises it.
+    folder for it. :meth:`bios_folder` answers ``None`` only where RetroDECK
+    is not detected, and :func:`no_bios_root`'s refusal where a detected
+    RetroDECK names no BIOS folder; :meth:`saves_root` answers ``None`` for
+    both. Every removal question refuses where the resolver only assumed its
+    root, and none minds the switch. Where detecting the sources, or asking
+    about RetroDECK's roots, raised, every question refuses — a download only
+    once RetroDECK is not switched off, which it says first; a raise on a
+    system's own folder refuses only that system's folder. A refusal comes
+    back as a value; the caller that needed the folder raises it.
     :meth:`move_roots` is the move code's, ``None`` where RetroDECK is not
     detected. Every path is symlink-resolved.
     """
 
     def download_folder(self, system: str) -> str | FolderRefused: ...
-
-    def bios_download_folder(self) -> str | FolderRefused: ...
 
     def rom_root(self) -> str | FolderRefused: ...
 

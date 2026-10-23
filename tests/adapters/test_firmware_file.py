@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
+import os
 import re
+import shutil
+import stat
 
 import pytest
 
 from adapters.firmware_file import FirmwareFileAdapter
+from domain.firmware_places import PlaceLook
 
 
 @pytest.fixture
@@ -135,3 +140,149 @@ class TestReadBytes:
     def test_missing_raises(self, fw_files, tmp_path):
         with pytest.raises(FileNotFoundError):
             fw_files.read_bytes(str(tmp_path / "missing.bin"))
+
+
+class TestLookingAtAPlace:
+    def test_nothing_there_says_whether_its_folder_is(self, fw_files, tmp_path):
+        assert fw_files.look(str(tmp_path / "x.bin")) == PlaceLook(lexists=False, folder_exists=True)
+        assert fw_files.look(str(tmp_path / "missing" / "x.bin")) == PlaceLook(lexists=False, folder_exists=False)
+
+    def test_a_link_is_not_followed_and_names_its_target(self, fw_files, tmp_path):
+        place = tmp_path / "x.bin"
+        place.symlink_to(tmp_path / "gone.bin")
+
+        assert fw_files.look(str(place)) == PlaceLook(lexists=True, link_target=str(tmp_path / "gone.bin"))
+
+    def test_a_relative_link_names_its_target_absolute(self, fw_files, tmp_path):
+        (tmp_path / "store").mkdir()
+        place = tmp_path / "x.bin"
+        place.symlink_to("store/y.bin")
+
+        assert fw_files.look(str(place)).link_target == str(tmp_path / "store" / "y.bin")
+
+    def test_a_file_and_a_folder(self, fw_files, tmp_path):
+        (tmp_path / "f.bin").write_bytes(b"x")
+        (tmp_path / "d").mkdir()
+
+        assert fw_files.look(str(tmp_path / "f.bin")) == PlaceLook(lexists=True)
+        assert fw_files.look(str(tmp_path / "d")) == PlaceLook(lexists=True, is_dir=True)
+
+
+class TestLinks:
+    def test_a_link_is_placed_where_the_name_is_free_and_never_over_anything(self, fw_files, tmp_path):
+        target = tmp_path / "store.bin"
+        target.write_bytes(b"x")
+        taken = tmp_path / "taken.bin"
+        taken.write_bytes(b"mine")
+
+        fw_files.symlink(str(target), str(tmp_path / "free.bin"))
+        with pytest.raises(FileExistsError):
+            fw_files.symlink(str(target), str(taken))
+
+        assert os.readlink(tmp_path / "free.bin") == str(target)
+        assert taken.read_bytes() == b"mine"
+
+    def test_removing_a_link_leaves_its_target_and_a_file_alone(self, fw_files, tmp_path):
+        target = tmp_path / "store.bin"
+        target.write_bytes(b"x")
+        link = tmp_path / "link.bin"
+        link.symlink_to(target)
+        plain = tmp_path / "plain.bin"
+        plain.write_bytes(b"y")
+
+        fw_files.remove_link(str(link))
+        fw_files.remove_link(str(plain))
+
+        assert not link.is_symlink()
+        assert target.exists()
+        assert plain.read_bytes() == b"y"
+
+    def test_moving_aside_never_moves_over_anything_and_leaves_both_where_they_are(self, fw_files, tmp_path):
+        (tmp_path / "old.bin").write_bytes(b"old")
+        (tmp_path / "place.bin").write_bytes(b"someone else's")
+        (tmp_path / "old.lnk").symlink_to(tmp_path / "elsewhere.bin")
+
+        with pytest.raises(FileExistsError):
+            fw_files.move_aside(str(tmp_path / "old.bin"), str(tmp_path / "place.bin"))
+        with pytest.raises(FileExistsError):
+            fw_files.move_aside(str(tmp_path / "old.lnk"), str(tmp_path / "place.bin"))
+
+        assert (tmp_path / "old.bin").read_bytes() == b"old"
+        assert (tmp_path / "old.lnk").is_symlink()
+        assert (tmp_path / "place.bin").read_bytes() == b"someone else's"
+
+    def test_moving_aside_moves_a_file_by_a_hardlink_where_the_filesystem_makes_one(self, fw_files, tmp_path):
+        (tmp_path / "old.bin").write_bytes(b"old")
+        inode = (tmp_path / "old.bin").stat().st_ino
+
+        fw_files.move_aside(str(tmp_path / "old.bin"), str(tmp_path / "moved" / "old.bin"))
+
+        assert (tmp_path / "moved" / "old.bin").stat().st_ino == inode
+        assert not (tmp_path / "old.bin").exists()
+
+    def test_moving_aside_copies_and_flushes_where_no_hardlink_can_be_made(self, fw_files, tmp_path, monkeypatch):
+        (tmp_path / "old.bin").write_bytes(b"old")
+        (tmp_path / "old.bin").chmod(0o640)
+        inode = (tmp_path / "old.bin").stat().st_ino
+        flushed: list[int] = []
+        fsync = os.fsync
+
+        def other_filesystem(_src, _dst):
+            raise OSError(errno.EXDEV, "Invalid cross-device link")
+
+        def recording(fd):
+            flushed.append(fd)
+            fsync(fd)
+
+        monkeypatch.setattr(os, "link", other_filesystem)
+        monkeypatch.setattr(os, "fsync", recording)
+        fw_files.move_aside(str(tmp_path / "old.bin"), str(tmp_path / "moved.bin"))
+
+        assert (tmp_path / "moved.bin").read_bytes() == b"old"
+        assert (tmp_path / "moved.bin").stat().st_ino != inode
+        assert stat.S_IMODE((tmp_path / "moved.bin").stat().st_mode) == 0o640
+        assert not (tmp_path / "old.bin").exists()
+        # The file and its folder.
+        assert len(flushed) == 2
+
+    def test_moving_aside_by_a_copy_never_moves_over_anything(self, fw_files, tmp_path, monkeypatch):
+        (tmp_path / "old.bin").write_bytes(b"old")
+        (tmp_path / "place.bin").write_bytes(b"someone else's")
+
+        def other_filesystem(_src, _dst):
+            raise OSError(errno.EXDEV, "Invalid cross-device link")
+
+        monkeypatch.setattr(os, "link", other_filesystem)
+        with pytest.raises(FileExistsError):
+            fw_files.move_aside(str(tmp_path / "old.bin"), str(tmp_path / "place.bin"))
+
+        assert (tmp_path / "old.bin").read_bytes() == b"old"
+        assert (tmp_path / "place.bin").read_bytes() == b"someone else's"
+
+    def test_moving_aside_leaves_nothing_where_the_copy_failed(self, fw_files, tmp_path, monkeypatch):
+        (tmp_path / "old.bin").write_bytes(b"old")
+
+        def other_filesystem(_src, _dst):
+            raise OSError(errno.EXDEV, "Invalid cross-device link")
+
+        def full(_source, _out):
+            raise OSError(errno.ENOSPC, "No space left on device")
+
+        monkeypatch.setattr(os, "link", other_filesystem)
+        monkeypatch.setattr(shutil, "copyfileobj", full)
+        with pytest.raises(OSError):
+            fw_files.move_aside(str(tmp_path / "old.bin"), str(tmp_path / "again.bin"))
+
+        assert (tmp_path / "old.bin").read_bytes() == b"old"
+        assert not (tmp_path / "again.bin").exists()
+
+    def test_moving_aside_creates_the_folders_and_moves_a_link_as_itself(self, fw_files, tmp_path):
+        (tmp_path / "f.bin").write_bytes(b"wrong")
+        (tmp_path / "l.bin").symlink_to(tmp_path / "elsewhere.bin")
+
+        fw_files.move_aside(str(tmp_path / "f.bin"), str(tmp_path / "backup" / "a" / "f.bin"))
+        fw_files.move_aside(str(tmp_path / "l.bin"), str(tmp_path / "backup" / "a" / "l.bin"))
+
+        assert (tmp_path / "backup" / "a" / "f.bin").read_bytes() == b"wrong"
+        assert os.readlink(tmp_path / "backup" / "a" / "l.bin") == str(tmp_path / "elsewhere.bin")
+        assert not (tmp_path / "f.bin").exists()

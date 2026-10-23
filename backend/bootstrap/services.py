@@ -31,6 +31,7 @@ from services.disc_launch_resolver import DiscLaunchResolver, DiscLaunchResolver
 from services.downloads import DownloadService, DownloadServiceConfig
 from services.emulator_sources import EmulatorSourcesService, EmulatorSourcesServiceConfig
 from services.firmware import FirmwareService, FirmwareServiceConfig
+from services.firmware.store import FirmwareStore, FirmwareStoreConfig
 from services.game_detail import GameDetailService, GameDetailServiceConfig
 from services.game_process import GameProcessService, GameProcessServiceConfig
 from services.leftover_tmp_cleanup import LeftoverTmpCleanupService, LeftoverTmpCleanupServiceConfig
@@ -211,13 +212,44 @@ def wire_services(cfg: WiringConfig) -> ServicesBundle:
         sync_in_flight=sync_in_flight_binding.get,
     )
 
-    # No store records anything under Tender's folder yet; each one that does
-    # joins this tuple.
+    # The system a RomM platform is in an emulator source, which every reader of
+    # a platform's system asks — the download, the emulator choice, the BIOS
+    # answers and the saves — so they all ask the same question.
+    platform_systems = PlatformSystemService(
+        config=PlatformSystemServiceConfig(
+            uow_factory=cfg.callbacks.uow_factory,
+            romm_api=cfg.adapters.romm_api,
+            source_platform_systems=cfg.adapters.source_platform_systems,
+            logger=cfg.runtime.logger,
+            log_debug=cfg.callbacks.log_debug,
+        ),
+    )
+
+    # The firmware store records files under Tender's folder, which asks it
+    # what is recorded there, while every write into the store goes through
+    # the folder made ready for it — so the store is built first and reaches
+    # the folder service through this binding.
+    prepare_folder_binding: LateBinding[str] = LateBinding("prepare_folder")
+    firmware_store = FirmwareStore(
+        config=FirmwareStoreConfig(
+            romm_api=cfg.adapters.romm_api,
+            firmware_file_store=cfg.adapters.firmware_file_store,
+            platform_firmware_resolver=cfg.adapters.platform_firmware_resolver,
+            platform_systems=platform_systems,
+            prepare_folder=prepare_folder_binding.get,
+            uow_factory=cfg.callbacks.uow_factory,
+            clock=cfg.runtime.clock,
+            data_dir=cfg.directories.data_dir,
+            logger=cfg.runtime.logger,
+        )
+    )
+
+    # Every store that records something under Tender's folder joins this tuple.
     tender_folder_service = TenderFolderService(
         config=TenderFolderServiceConfig(
             store=cfg.adapters.tender_folder,
             sources=cfg.adapters.emulator_sources,
-            records=(),
+            records=(firmware_store,),
             settings=cfg.stores.settings,
             settings_persister=cfg.callbacks.settings_persister,
             uow_factory=cfg.callbacks.uow_factory,
@@ -228,6 +260,7 @@ def wire_services(cfg: WiringConfig) -> ServicesBundle:
         ),
     )
     folder_unreachable_binding.set(tender_folder_service.unreachable_refusal)
+    prepare_folder_binding.set(tender_folder_service.do_prepare_for_write)
 
     # Forward-reference bindings for producers constructed later in this
     # function. Consumers receive ``binding.get`` (a bound method); the
@@ -256,19 +289,6 @@ def wire_services(cfg: WiringConfig) -> ServicesBundle:
     # (no service deps) so every per-game-core read consumer — migration, saves,
     # game-detail, cores — draws from the SAME seam and the read-path core never
     # diverges from the launched core.
-    # The system a RomM platform is in an emulator source, which every reader of
-    # a platform's system asks — the download, the emulator choice, the BIOS
-    # answers and the saves — so they all ask the same question.
-    platform_systems = PlatformSystemService(
-        config=PlatformSystemServiceConfig(
-            uow_factory=cfg.callbacks.uow_factory,
-            romm_api=cfg.adapters.romm_api,
-            source_platform_systems=cfg.adapters.source_platform_systems,
-            logger=cfg.runtime.logger,
-            log_debug=cfg.callbacks.log_debug,
-        ),
-    )
-
     active_core_resolver = ActiveCoreResolver(
         config=ActiveCoreResolverConfig(
             uow_factory=cfg.callbacks.uow_factory,
@@ -539,6 +559,7 @@ def wire_services(cfg: WiringConfig) -> ServicesBundle:
             logger=cfg.runtime.logger,
             download_file_store=cfg.adapters.download_file_store,
             retrodeck_folders=cfg.callbacks.retrodeck_folders,
+            tender_folder=cfg.adapters.tender_folder,
         ),
     )
 
@@ -567,8 +588,9 @@ def wire_services(cfg: WiringConfig) -> ServicesBundle:
             logger=cfg.runtime.logger,
             clock=cfg.runtime.clock,
             firmware_file_store=cfg.adapters.firmware_file_store,
-            firmware_resolver=cfg.adapters.firmware_resolver,
             platform_firmware_resolver=cfg.adapters.platform_firmware_resolver,
+            firmware_identifier=cfg.adapters.firmware_identifier,
+            store=firmware_store,
             retrodeck_folders=cfg.callbacks.retrodeck_folders,
             core_info=cfg.adapters.core_info_provider,
             platform_systems=platform_systems,

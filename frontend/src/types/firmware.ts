@@ -47,16 +47,18 @@ export type FirmwareDeclaredKind = "file" | "directory";
 export type FirmwareDeclarationState = "read" | "packaged" | "absent" | "unreadable" | "unsupported";
 
 /**
- * What became of a row's BYTES, in the resolver's own stable vocabulary, carried
- * verbatim like {@link FirmwareDeclarationState}.
+ * What became of a row's BYTES, in the resolver's own stable vocabulary but for
+ * `rejected` (below), carried verbatim like {@link FirmwareDeclarationState}.
  *
- * Eight values and they are not one axis. Three say a comparison HAPPENED and
+ * Nine values and they are not one axis. Three say a comparison HAPPENED and
  * differ in what it found — `verified` (the bytes are the pinned ones),
  * `mismatch` (they are not), `unrecognised` (they were read and no table the
  * emulator keeps knows them, which DuckStation boots anyway with a warning) —
  * while `unread` says the bytes were asked for and did not come back, and
  * `unchecked` that nothing asked. `refused` is the emulator declining to open
- * the file at all on its size, before reading a byte.
+ * the file at all on its size, before reading a byte. `rejected` is Tender's own
+ * word, not the resolver's: a file in a declared folder the emulator's own test
+ * read and turned down, which the resolver states only as that file's verdict.
  *
  * It is not a second verdict and never read as one: `satisfied` says whether the
  * requirement is met, this says what was done to establish it. What it exists
@@ -67,7 +69,15 @@ export type FirmwareDeclarationState = "read" | "packaged" | "absent" | "unreada
  * ordinary answer for a file that is simply not there.
  */
 export type FirmwareChecked =
-  "verified" | "mismatch" | "unchecked" | "unknown" | "not-comparable" | "unrecognised" | "refused" | "unread";
+  | "verified"
+  | "mismatch"
+  | "rejected"
+  | "unchecked"
+  | "unknown"
+  | "not-comparable"
+  | "unrecognised"
+  | "refused"
+  | "unread";
 
 /**
  * This file as an option of a one-of group — a requirement whose launch needs
@@ -182,6 +192,133 @@ interface FirmwareVerdict {
    *  library file no emulator claims. A row is shown with its own emulator
    *  ({@link EmulatorTab}), and an unclaimed one in the library's own section. */
   declared_by?: string | null;
+  /** The RomM library file that fills the row — see {@link LibraryMatch}.
+   *  `null` where none does; absent on a payload from before the field. */
+  library?: LibraryMatch | null;
+  /** The name of this platform's store copy that fills the row, `null` where
+   *  Tender's firmware store holds none for this platform. */
+  store_file?: string | null;
+  /** What lies at the row's place — see {@link PlaceLink}. `null` for a library
+   *  row, which has no place. */
+  link?: PlaceLink | null;
+  /** The platform whose store copy a link of Tender's at the place points at,
+   *  where that is another platform's (`link: "linked_elsewhere"`). */
+  linked_for?: string | null;
+  /** The name the platform `linked_for` slugs is shown under, as the library sync last recorded it. */
+  linked_for_name?: string | null;
+  /** Why no link may go to the row's place, `null` where one may — see
+   *  {@link PlaceRefusal}. */
+  place_refusal?: PlaceRefusal | null;
+  /** Whether the row offers "Replace…": another file lies at the place, the
+   *  resolver reads it as wrong, and the library copy is proven right by its
+   *  checksum. Decided by the backend alone. */
+  replace_offered?: boolean;
+  /** The folder declaration this row is one file in — LRPS2's `pcsx2/bios` —
+   *  `null` for every other row. */
+  in_folder?: string | null;
+  /** The name a Delete on this row is addressed by: the store file, an older
+   *  download of the library file that fills the row, or an older download
+   *  lying at the row's own place. `null` offers no Delete. */
+  delete_name?: string | null;
+}
+
+/**
+ * The RomM library file that fills a row, and how. `matched` is `content` for a
+ * file whose MD5 is the one the resolver pins for the requirement, wherever RomM
+ * files it; `archive_name` for an archive matched by its declared name, whose
+ * contents cannot be compared; `no_checksum_name` for a requirement the resolver
+ * knows no checksum for (Cemu's `keys.txt`); `null` on a library row, which
+ * fills nothing. `no_checksum` is true where RomM states no checksum for the
+ * file, so a download of it could not be checked and none is offered.
+ */
+export interface LibraryMatch {
+  firmware_id: number | null;
+  file_name: string;
+  platform_slug: string;
+  matched: "content" | "archive_name" | "no_checksum_name" | null;
+  md5: string;
+  size: number;
+  no_checksum: boolean;
+}
+
+/**
+ * What lies at a row's place. `linked`: Tender's link to this platform's store
+ * copy. `linked_elsewhere`: Tender's link to another platform's copy
+ * (`linked_for`). `not_linked`: nothing, or a link of Tender's pointing at
+ * nothing, while this platform's store holds a copy — the link update places it.
+ * `occupied`: a file, folder or link that is not Tender's, which is never
+ * changed but by a confirmed "Replace…". `free`: nothing, and no store copy.
+ */
+export type PlaceLink = "linked" | "linked_elsewhere" | "not_linked" | "occupied" | "free";
+
+/**
+ * Why a link may not go to a row's place: the folder it lies in does not exist
+ * (`folder_missing`), it lies under a root the resolver only assumed, or the
+ * source's roots could not be asked at all (`root_assumed`), the resolver could
+ * not look at it (`unreadable`), the answer names no place (`no_place`), or the
+ * source states the row's emulator is not installed (`not_installed`).
+ * `folder` is the folder a sentence names, `source` the emulator source the
+ * row is read in.
+ */
+export interface PlaceRefusal {
+  reason: "folder_missing" | "root_assumed" | "unreadable" | "no_place" | "not_installed";
+  folder: string | null;
+  source: string;
+}
+
+/**
+ * Why a download on this page lands in Tender's firmware store and is linked
+ * nowhere: the launching emulator is one the resolver does not cover, or no
+ * emulator source answers for the platform. `null` where links follow.
+ */
+export type StoreOnly = "unsupported" | "no_source";
+
+/** What a Delete left in place: a link of Tender's into the store under a
+ *  root that could not be read, or a file an older version downloaded that
+ *  Tender may not remove now (`why`). `folder` is the root a link lies under,
+ *  where one is known, and the folder an older download lies in; `source` is
+ *  the emulator source the reason is about. */
+export interface BiosKeptLink {
+  kind: "link" | "file";
+  place: string;
+  folder: string | null;
+  source: string;
+  /** The older download's name in RomM; a link names none. */
+  file_name?: string;
+  /** Why an older download stayed: RetroDECK's settings could not be read,
+   *  RetroDECK is not installed, or it names no BIOS folder — in these it
+   *  stays counted — or it lies outside RetroDECK's BIOS folder, and Tender
+   *  dropped its record. */
+  why?: "settings_unreadable" | "not_installed" | "no_bios_folder" | "outside_bios_folder";
+}
+
+/** A link a placement could not create, and the system's reason. */
+export interface BiosLinkFailure {
+  place: string;
+  file_name: string | null;
+  reason: string;
+}
+
+/** What bringing a platform's links up to date did, over every enabled source. */
+export interface BiosLinkResult {
+  success: true;
+  placed: number;
+  left_in_place: number;
+  /** Links of Tender's that pointed at nothing and were removed. */
+  removed: number;
+  link_failures: BiosLinkFailure[];
+}
+
+/** A replacement's answer: where the old file went, and the links placed. */
+export interface BiosReplaceResult extends BiosLinkResult {
+  backup_path: string;
+}
+
+/** What the resolver knows a library file's content as: every name, `[]` for
+ *  content it does not know, `null` where nothing could be asked. */
+export interface FirmwareIdentification {
+  success: true;
+  known_as: string[] | null;
 }
 
 interface FirmwareFile extends FirmwareVerdict {
@@ -217,15 +354,13 @@ interface FirmwareFile extends FirmwareVerdict {
   used_by_active?: boolean;
   on_server: boolean;
   supplied_by?: string | null;
-  /** How many of Tender's own downloads a delete on THIS row would remove:
-   *  1 for a declared file a download record names and still holds, and for a
-   *  declared FOLDER the number of recorded files written underneath it — the
-   *  emulator lists the folder, but whatever we downloaded into it is ours.
-   *  Having placed a file is the whole authority to remove it.
+  /** Whether a Delete on THIS row removes a file of Tender's: 1 where the row
+   *  names one (`delete_name`), 0 otherwise. Having placed a file is the whole
+   *  authority to remove it.
    *
-   *  **Never substitute `downloaded` for this.** That is `os.path.exists` at the
-   *  row's recomputed destination, equally true of firmware the emulator shipped
-   *  with (`dolphin-emu/Sys/codehandler.bin`) and of a file the user placed by
+   *  **Never substitute `downloaded` for this.** That is whether a file is at
+   *  the row's place, equally true of firmware the emulator shipped with
+   *  (`dolphin-emu/Sys/codehandler.bin`) and of a file the user placed by
    *  hand — neither of which any RomM library can hand back. Absent means the
    *  payload never spoke about it, which offers no delete rather than guessing. */
   deletable_count?: number;
@@ -386,11 +521,17 @@ export interface FirmwarePlatformExt extends EmulatorAnswer {
   ratio_local_count?: number;
   known_count?: number;
   unknown_count?: number;
-  /** How many files the platform-wide delete would remove: download records Tender
-   *  wrote whose file is still on disk. Deliberately not `local_count` — that is
-   *  the library's progress ratio, which counts files nothing here put on disk
-   *  and drops our own downloads once RomM stops listing them. */
+  /** How many files the platform-wide delete would act on: every file of this
+   *  platform's store Tender has a record of and that is on disk, whichever
+   *  row it fills or none, and the older downloads still on disk. Deliberately
+   *  not `local_count` — that is the library's progress ratio, which counts
+   *  files nothing here put on disk. */
   deletable_count?: number;
+  /** See {@link StoreOnly}; absent or `null` where a download is linked. */
+  store_only?: StoreOnly | null;
+  /** The folder a replaced file's backup goes under, each in a folder of its
+   *  own date and time — what "Replace…" names before it runs. */
+  backup_root?: string;
 }
 
 /**
@@ -605,17 +746,21 @@ export interface BiosStatus extends EmulatorAnswer {
   // (#1693) — and the panel renders it as its own state rather than hiding the
   // BIOS tab, which would say the same thing (#1660).
   bios_status_unknown?: boolean;
+  /** See {@link StoreOnly}. */
+  store_only?: StoreOnly | null;
+  /** As on {@link FirmwarePlatformExt}. */
+  backup_root?: string;
 }
 
 /** A firmware download's success answer — a batch whose files partly or wholly failed answers it too; its failure is
  *  the endpoints' shared one. `failed` comes only from the two batches, naming the files they could not fetch, and
- *  once it is non-empty `message` is the sentence that says so. `file_path` and `md5_match` come only from the
- *  per-row download, and only when it fetched. */
-export interface FirmwareDownloadResult {
+ *  once it is non-empty `message` is the sentence that says so. Every download then brings the platform's links up
+ *  to date, and answers what that did beside it; `backups` are where files lying in the store without a record of
+ *  Tender's went before the download. */
+export interface FirmwareDownloadResult extends Partial<Omit<BiosLinkResult, "success">> {
   success: true;
   message: string;
   downloaded: number;
   failed?: string[];
-  file_path?: string;
-  md5_match?: boolean | null;
+  backups?: string[];
 }

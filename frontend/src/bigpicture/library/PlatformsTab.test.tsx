@@ -24,11 +24,19 @@ import { showContextMenu, showModal } from "@decky/ui";
 import { LibraryPage } from "../LibraryPage";
 import { BiosTab } from "../BiosTab";
 import * as backend from "../../api/backend";
+import { toaster } from "../../api/host";
 import { removeShortcut, setLaunchOptionsConfirmed } from "../../utils/steamShortcuts";
 import { clearPlatformCollection } from "../../utils/collections";
 import { setSyncProgress } from "../../utils/syncProgress";
 import { biosColorForLevel } from "../../utils/biosColor";
-import type { CoreInfo, FirmwarePlatformExt, PlatformSyncSetting, SystemCoreInfo, WireReason } from "../../types";
+import type {
+  BiosLinkResult,
+  CoreInfo,
+  FirmwarePlatformExt,
+  PlatformSyncSetting,
+  SystemCoreInfo,
+  WireReason,
+} from "../../types";
 import { NOTE_FONT, SECONDARY_FONT } from "../layout/pane";
 
 // `scrollFocusedToCenter` is the game page tab's, not this page's: one test
@@ -3575,11 +3583,7 @@ describe("Library › Platforms", () => {
         await act(async () => {
           fireEvent.click(buttonByText(container, "Download")!);
         });
-        expect(vi.mocked(backend.downloadPlatformFirmwareFile)).toHaveBeenCalledWith(
-          "gba",
-          "saturn_bios.bin",
-          "kronos_libretro.so",
-        );
+        expect(vi.mocked(backend.downloadPlatformFirmwareFile)).toHaveBeenCalledWith("gba", "saturn_bios.bin", null);
         await flushAsync();
         await act(async () => {
           fireEvent.click(buttonByText(container, "Download required for Kronos (1)")!);
@@ -3733,6 +3737,40 @@ describe("Library › Platforms", () => {
       // No notice on success: the spinner ending and the re-read rows are the
       // message, which is what the device pass asked for.
       expect(within(container).queryByTestId("status-bios")).toBeNull();
+    });
+
+    it("downloads the library file the row shows, by its id", async () => {
+      mockFirmware([
+        firmwarePlatform({
+          files: [
+            firmwareFile({
+              library: {
+                firmware_id: 42,
+                file_name: "gba_bios.bin",
+                platform_slug: "gba",
+                matched: "content",
+                md5: "a860e8c0b6d573d191e4ec7db1b1e4f6",
+                size: 16384,
+                no_checksum: false,
+              },
+            }),
+          ],
+        }),
+      ]);
+      vi.mocked(backend.downloadPlatformFirmwareFile).mockResolvedValue({
+        success: true,
+        message: "Downloaded gba_bios.bin",
+        downloaded: 1,
+      });
+      const { container } = render(<LibraryPage onBack={vi.fn()} />);
+      await flushAsync();
+
+      await act(async () => {
+        fireEvent.click(buttonByText(container, "Download")!);
+        for (let i = 0; i < 8; i++) await Promise.resolve();
+      });
+
+      expect(vi.mocked(backend.downloadPlatformFirmwareFile)).toHaveBeenCalledWith("gba", "gba_bios.bin", 42);
     });
 
     it("offers no Download for a file already here, nor for one the library does not hold", async () => {
@@ -4264,45 +4302,6 @@ describe("Library › Platforms", () => {
       } finally {
         globalThis.removeEventListener("romm_data_changed", listener);
       }
-    });
-
-    it("offers a folder row the delete of what we downloaded into it", async () => {
-      // Two rules, not one. A folder is never offered as a DOWNLOAD — there is
-      // no file to fetch into a name the emulator lists — and that says nothing
-      // about the files already inside it, which are ours wherever a record
-      // names them. PS2's pcsx2/bios is the whole of that case.
-      mockFirmware([
-        firmwarePlatform({
-          files: [
-            firmwareFile({
-              file_name: "bios",
-              declared_path: "pcsx2/bios",
-              declared_kind: "directory",
-              local_path: "/home/deck/retrodeck/bios/pcsx2/bios",
-              on_server: false,
-              satisfied: true,
-              deletable_count: 2,
-            }),
-          ],
-          deletable_count: 2,
-        }),
-      ]);
-      vi.mocked(backend.deleteBiosFolder).mockResolvedValue({ success: true, deleted_count: 2, message: "" });
-      const { container } = render(<LibraryPage onBack={vi.fn()} />);
-      await flushAsync();
-
-      // The count is on the button, and the row still offers no download.
-      expect(buttonByText(container, "Delete (2)")).toBeTruthy();
-      expect(buttonByText(container, "Download")).toBeUndefined();
-
-      await act(async () => {
-        fireEvent.click(buttonByText(container, "Delete (2)")!);
-        await Promise.resolve();
-      });
-      await confirmLastModal();
-
-      // Addressed by the folder, because no record carries a folder's name.
-      expect(vi.mocked(backend.deleteBiosFolder)).toHaveBeenCalledWith("gba", "/home/deck/retrodeck/bios/pcsx2/bios");
     });
 
     it("shows a folder row no description, because its verdict is its meaning", async () => {
@@ -5015,6 +5014,306 @@ describe("Library › Platforms", () => {
       expect(container.textContent).toContain("Readiness unknown");
       expect(container.textContent).toContain("One file mGBA opens by name could not be checked");
       expect(buttonByText(container, "Download required for mGBA (1)")).toBeTruthy();
+    });
+  });
+
+  // ------------------------------------------------------------------
+  // Bringing a platform's BIOS links up to date
+  // ------------------------------------------------------------------
+  describe("bringing BIOS links up to date", () => {
+    const linked = (overrides: Partial<BiosLinkResult> = {}): BiosLinkResult => ({
+      success: true,
+      placed: 0,
+      left_in_place: 0,
+      removed: 0,
+      link_failures: [],
+      ...overrides,
+    });
+
+    const reads = (slug: string) =>
+      vi.mocked(backend.getPlatformFirmwareStatus).mock.calls.filter(([asked]) => asked === slug).length;
+
+    it("asks once the pane has its answer, and reads the platform again where that placed a link", async () => {
+      vi.mocked(backend.updateBiosLinks).mockResolvedValue(linked({ placed: 1 }));
+      render(<LibraryPage onBack={vi.fn()} />);
+      await flushAsync();
+      await flushAsync();
+
+      expect(vi.mocked(backend.updateBiosLinks)).toHaveBeenCalledExactlyOnceWith("gba", null);
+      expect(reads("gba")).toBe(2);
+    });
+
+    it("downloads nothing, and reads nothing again where no link changed", async () => {
+      vi.mocked(backend.updateBiosLinks).mockResolvedValue(linked());
+      render(<LibraryPage onBack={vi.fn()} />);
+      await flushAsync();
+      await flushAsync();
+
+      expect(vi.mocked(backend.updateBiosLinks)).toHaveBeenCalledOnce();
+      expect(reads("gba")).toBe(1);
+      expect(vi.mocked(backend.downloadAllFirmware)).not.toHaveBeenCalled();
+      expect(vi.mocked(backend.downloadRequiredFirmware)).not.toHaveBeenCalled();
+      expect(vi.mocked(backend.downloadPlatformFirmwareFile)).not.toHaveBeenCalled();
+    });
+
+    it("says in the status line what was left in place, and raises no toast", async () => {
+      vi.mocked(backend.updateBiosLinks).mockResolvedValue(linked({ placed: 3, left_in_place: 1 }));
+      const { container } = render(<LibraryPage onBack={vi.fn()} />);
+      await flushAsync();
+      await flushAsync();
+
+      expect(within(container).getByTestId("status-bios").textContent).toBe(
+        "3 placed, 1 left in place: another file lies there",
+      );
+      expect(vi.mocked(toaster.toast)).not.toHaveBeenCalled();
+    });
+
+    it("brings the links up to date again once the emulator is switched", async () => {
+      vi.mocked(backend.updateBiosLinks).mockResolvedValue(linked());
+      vi.mocked(backend.setSystemCore).mockResolvedValue({ success: true, rebake_items: [] });
+      const { container } = render(<LibraryPage onBack={vi.fn()} />);
+      await flushAsync();
+      await act(async () => {
+        fireEvent.click(coreButton(container)!);
+        await Promise.resolve();
+      });
+      await pickFromCoreMenu("VBA Next");
+      await flushAsync();
+      await flushAsync();
+
+      expect(vi.mocked(backend.updateBiosLinks).mock.calls).toEqual([
+        ["gba", null],
+        ["gba", null],
+      ]);
+      const [switched] = vi.mocked(backend.setSystemCore).mock.invocationCallOrder;
+      const [, afterSwitch] = vi.mocked(backend.updateBiosLinks).mock.invocationCallOrder;
+      expect(afterSwitch).toBeGreaterThan(switched ?? Infinity);
+      expect(vi.mocked(backend.downloadAllFirmware)).not.toHaveBeenCalled();
+      expect(vi.mocked(backend.downloadRequiredFirmware)).not.toHaveBeenCalled();
+    });
+  });
+
+  // ------------------------------------------------------------------
+  // What a delete left and a download moved aside, in the status line
+  // ------------------------------------------------------------------
+  describe("what a delete left and a download moved aside", () => {
+    const KEPT =
+      "Left a link in /r/bios: RetroDECK's settings could not be read. Tender removes it once they can be read.";
+
+    beforeEach(() => {
+      vi.mocked(backend.updateBiosLinks).mockResolvedValue({
+        success: true,
+        placed: 0,
+        left_in_place: 0,
+        removed: 0,
+        link_failures: [],
+      });
+    });
+
+    it("says under the platform's delete which folder kept a link", async () => {
+      mockFirmware([firmwarePlatform({ deletable_count: 1 })]);
+      vi.mocked(backend.deletePlatformBios).mockResolvedValue({
+        success: true,
+        deleted_count: 1,
+        message: "Deleted 1 BIOS file(s)",
+        kept: [{ kind: "link", place: "/r/bios/gba_bios.bin", folder: "/r/bios", source: "retrodeck" }],
+      });
+      const { container } = render(<LibraryPage onBack={vi.fn()} />);
+      await flushAsync();
+
+      await act(async () => {
+        fireEvent.click(buttonByText(container, "Delete downloads (1)")!);
+        await Promise.resolve();
+      });
+      await confirmLastModal();
+      await flushAsync();
+
+      expect(within(container).getByTestId("status-bios").textContent).toBe(`Deleted 1 BIOS file(s)\n${KEPT}`);
+    });
+
+    it("says after a batch with a failure what it left in place too", async () => {
+      vi.mocked(backend.downloadAllFirmware).mockResolvedValue({
+        success: true,
+        message: "Downloaded 1 firmware files (1 failed: b.bin)",
+        downloaded: 1,
+        failed: ["b.bin"],
+        placed: 2,
+        left_in_place: 1,
+      });
+      const { container } = render(<LibraryPage onBack={vi.fn()} />);
+      await flushAsync();
+
+      await act(async () => {
+        fireEvent.click(buttonByText(container, "Download all")!);
+        for (let i = 0; i < 8; i++) await Promise.resolve();
+      });
+
+      expect(within(container).getByTestId("status-bios").textContent).toBe(
+        "Downloaded 1 firmware files (1 failed: b.bin)\n2 placed, 1 left in place: another file lies there",
+      );
+    });
+
+    it("says after a download which file it moved aside", async () => {
+      vi.mocked(backend.downloadPlatformFirmwareFile).mockResolvedValue({
+        success: true,
+        message: "Downloaded gba_bios.bin",
+        downloaded: 1,
+        backups: ["/d/backups/bios/2026-10-21_20-00-00/t/bios/gba/gba_bios.bin"],
+      });
+      const { container } = render(<LibraryPage onBack={vi.fn()} />);
+      await flushAsync();
+
+      await act(async () => {
+        fireEvent.click(buttonByText(container, "Download")!);
+        for (let i = 0; i < 8; i++) await Promise.resolve();
+      });
+
+      expect(within(container).getByTestId("status-bios").textContent).toBe(
+        "A different gba_bios.bin was already in Tender's firmware store. It was moved to /d/backups/bios/2026-10-21_20-00-00/t/bios/gba/gba_bios.bin.",
+      );
+    });
+  });
+
+  describe("Replace… on a row", () => {
+    const PLACE = "/r/bios/gba_bios.bin";
+    const BACKUP = "/d/backups/bios/2026-10-22_10-00-00/r/bios/gba_bios.bin";
+
+    beforeEach(() => {
+      vi.mocked(backend.updateBiosLinks).mockResolvedValue({
+        success: true,
+        placed: 0,
+        left_in_place: 0,
+        removed: 0,
+        link_failures: [],
+      });
+      vi.mocked(showModal).mockClear();
+      mockFirmware([
+        firmwarePlatform({
+          backup_root: "/d/backups/bios",
+          files: [
+            firmwareFile({
+              local_path: PLACE,
+              downloaded: true,
+              satisfied: false,
+              link: "occupied",
+              replace_offered: true,
+              library: {
+                firmware_id: 7,
+                file_name: "gba_bios.bin",
+                platform_slug: "gba",
+                matched: "content",
+                md5: "a860e8c0b6d573d191e4ec7db1b1e4f6",
+                size: 16384,
+                no_checksum: false,
+              },
+            }),
+            // Another file lies here too, but no library copy is proven right.
+            firmwareFile({
+              file_name: "gb_bios.bin",
+              local_path: "/r/bios/gb_bios.bin",
+              downloaded: true,
+              satisfied: false,
+              link: "occupied",
+              replace_offered: false,
+            }),
+          ],
+        }),
+      ]);
+    });
+
+    const rowsOf = (container: HTMLElement) =>
+      [...container.querySelectorAll<HTMLElement>('[data-testid="disk-mark"]')].map(
+        (mark) => mark.parentElement?.parentElement as HTMLElement,
+      );
+    const pressReplace = async (container: HTMLElement) => {
+      await act(async () => {
+        fireEvent.click(buttonByText(container, "Replace…")!);
+        await Promise.resolve();
+      });
+    };
+
+    it("is offered only on the row the backend offers it on", async () => {
+      const { container } = render(<LibraryPage onBack={vi.fn()} />);
+      await flushAsync();
+
+      const offered = [...container.querySelectorAll("button")].filter((b) => b.textContent === "Replace…");
+      expect(offered).toHaveLength(1);
+      const row = rowsOf(container).find((r) => r.textContent.includes("Replace…"));
+      expect(row?.textContent).toContain("gba_bios.bin");
+      expect(row?.textContent).not.toContain("gb_bios.bin");
+    });
+
+    it("asks first, naming the place and where the old file goes, and Cancel replaces nothing", async () => {
+      const { container } = render(<LibraryPage onBack={vi.fn()} />);
+      await flushAsync();
+
+      await pressReplace(container);
+      const props = lastModalProps<{ strTitle: string; strDescription: string; onCancel?: () => void }>();
+      expect(props?.strTitle).toBe("Replace gba_bios.bin?");
+      expect(props?.strDescription).toBe(
+        `The file at ${PLACE} goes to /d/backups/bios, and Tender's copy is linked in its place.`,
+      );
+      expect(vi.mocked(backend.replaceBiosFile)).not.toHaveBeenCalled();
+
+      await act(async () => {
+        props?.onCancel?.();
+        for (let i = 0; i < 8; i++) await Promise.resolve();
+      });
+      await flushAsync();
+      expect(vi.mocked(backend.replaceBiosFile)).not.toHaveBeenCalled();
+    });
+
+    it("replaces the file at the row's place for its platform once confirmed, and says where the old one went", async () => {
+      vi.mocked(backend.replaceBiosFile).mockResolvedValue({
+        success: true,
+        placed: 1,
+        left_in_place: 0,
+        removed: 0,
+        link_failures: [],
+        backup_path: BACKUP,
+      });
+      const { container } = render(<LibraryPage onBack={vi.fn()} />);
+      await flushAsync();
+
+      await pressReplace(container);
+      await confirmLastModal();
+      await flushAsync();
+
+      expect(vi.mocked(backend.replaceBiosFile)).toHaveBeenCalledWith("gba", PLACE);
+      expect(container.textContent).toContain(`Replaced. The old file is in ${BACKUP}.`);
+    });
+
+    it("says a refusal in the status line", async () => {
+      vi.mocked(backend.replaceBiosFile).mockResolvedValue({
+        success: false,
+        reason: "replace_failed",
+        message: "Could not put Tender's copy in place; the old file is back.",
+      });
+      const { container } = render(<LibraryPage onBack={vi.fn()} />);
+      await flushAsync();
+
+      await pressReplace(container);
+      await confirmLastModal();
+      await flushAsync();
+
+      expect(within(container).getByTestId("status-bios").textContent).toBe(
+        "Failed to replace the file: Could not put Tender's copy in place; the old file is back.",
+      );
+      expect(container.textContent).not.toContain("Replaced. The old file is in");
+    });
+
+    it("says a failed call in the status line", async () => {
+      vi.mocked(backend.replaceBiosFile).mockRejectedValue(new Error("connection lost"));
+      const { container } = render(<LibraryPage onBack={vi.fn()} />);
+      await flushAsync();
+
+      await pressReplace(container);
+      await confirmLastModal();
+      await flushAsync();
+
+      expect(within(container).getByTestId("status-bios").textContent).toBe(
+        "Failed to replace the file: Error: connection lost",
+      );
     });
   });
 

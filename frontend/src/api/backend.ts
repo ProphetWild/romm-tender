@@ -17,7 +17,11 @@ import type {
   RegistryPlatform,
   FirmwareStatus,
   PlatformFirmwareStatus,
+  BiosKeptLink,
+  BiosLinkResult,
+  BiosReplaceResult,
   FirmwareDownloadResult,
+  FirmwareIdentification,
   BiosLevel,
   EmulatorAnswer,
   OneOfGroupVerdict,
@@ -772,23 +776,38 @@ export const applySteamInputSetting = endpoint<[], { success: boolean; message: 
 export const getFirmwareStatus = endpoint<[], FirmwareStatus>("get_firmware_status");
 export const getPlatformFirmwareStatus = endpoint<[string], PlatformFirmwareStatus>("get_platform_firmware_status");
 // The ROM is the game whose page started the download, whose install record names
-// the system its files are placed for; `null` from the platform page.
+// the system its files are linked for; `null` from the platform page.
 export const downloadAllFirmware = endpoint<[string, number | null], FirmwareDownloadResult | EndpointFailure>(
   "download_all_firmware",
 );
-// The emulator is the identity the page shows — the files land where IT opens
-// them; `null` places them for the platform's own pick.
+// The emulator is the identity the page shows — the files fetched are what IT
+// requires; `null` asks for the platform's own pick. Every file is linked for
+// every emulator that asks for it and is not stated not installed.
 export const downloadRequiredFirmware = endpoint<[string, string | null], FirmwareDownloadResult | EndpointFailure>(
   "download_required_firmware",
 );
-// One row's Download button (#164). Addressed by file name within the platform,
-// like the two bulk downloads — never by RomM's firmware id, which the status
-// row may have been holding since before the listing moved on. The emulator is
-// the one the page shows, as for `downloadRequiredFirmware`.
+// One row's Download button. Addressed by the file's name in RomM and by the id of
+// the library file the row shows, so two files of one name fetch the one shown; an
+// id the listing no longer holds under that name falls back to the name alone. The
+// file lands in the platform's store folder and is linked for every emulator that
+// wants it and is not stated not installed, whichever the page shows.
 export const downloadPlatformFirmwareFile = endpoint<
-  [string, string, string | null],
+  [string, string, number | null],
   FirmwareDownloadResult | EndpointFailure
 >("download_platform_firmware_file");
+// Brings a platform's links up to date in every enabled source and downloads
+// nothing; the ROM is the game whose page asked, whose install record names the
+// system, `null` from the platform page. Asked after the page is shown, and after
+// an emulator switch.
+export const updateBiosLinks = endpoint<[string, number | null], BiosLinkResult | EndpointFailure>("update_bios_links");
+// "Replace…" on a row: the file at the place goes to the backup folder and
+// Tender's copy is linked there. Addressed by the place the row named.
+export const replaceBiosFile = endpoint<[string, string], BiosReplaceResult | EndpointFailure>("replace_bios_file");
+// What the resolver knows a library file's content as, by its MD5 — slow for
+// each file, so asked one row at a time after the page is shown.
+export const identifyLibraryFirmware = endpoint<[string], FirmwareIdentification | EndpointFailure>(
+  "identify_library_firmware",
+);
 export const checkPlatformBios = endpoint<[string], BiosStatus>("check_platform_bios");
 export const getBiosStatus = endpoint<[number], BiosAnswer>("get_bios_status");
 /**
@@ -1767,19 +1786,15 @@ export const countPlatformSaves = endpoint<[string], { count: number }>("count_p
 // A delete that could not remove every file fails with `delete_incomplete` and
 // carries how many it did remove; every other failure carries no count.
 export type BiosDeleteResult =
-  { success: true; deleted_count: number; message: string } | (EndpointFailure & { deleted_count?: number });
+  | { success: true; deleted_count: number; message: string; kept?: BiosKeptLink[] }
+  | (EndpointFailure & { deleted_count?: number });
 export const deletePlatformBios = endpoint<[string], BiosDeleteResult>("delete_platform_bios");
 /** One row's Delete button — the per-file twin of `deletePlatformBios`, sharing
- *  its authorisation rather than restating it. Addressed by file name, and a
- *  name Tender holds no download record for removes nothing: the record is
- *  the only evidence we placed the file, and it is the record's own path that is
- *  unlinked. Offer it only where the row says `deletable`. */
+ *  its authorisation rather than restating it. Addressed by the file's name in
+ *  RomM (`delete_name`): the store file and every link of Tender's to it go, or
+ *  an older download at the path its record holds. A name Tender holds nothing
+ *  under removes nothing. Offer it only where the row says `deletable`. */
 export const deleteBiosFile = endpoint<[string, string], BiosDeleteResult>("delete_bios_file");
-/** A declared folder's Delete button. The folder has no name a download record
- *  could carry, so the files inside it are matched by being written underneath
- *  it — a filter over the platform's own records, which narrows and can never
- *  widen. The folder itself is never removed; the emulator lists it. */
-export const deleteBiosFolder = endpoint<[string, string], BiosDeleteResult>("delete_bios_folder");
 
 // Save version history endpoints
 export const savesListFileVersions = endpoint<[number, string, string], ListFileVersionsResult>(

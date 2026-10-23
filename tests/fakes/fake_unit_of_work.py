@@ -1,4 +1,4 @@
-"""In-memory ``UnitOfWork`` composing the fourteen fake repositories, for service tests.
+"""In-memory ``UnitOfWork`` composing the sixteen fake repositories, for service tests.
 
 Mirrors the real UoW's context-manager shape — a clean ``__exit__`` commits and
 flips ``committed``; an exceptional one truly rolls back (discards every write
@@ -36,6 +36,7 @@ from fakes.fake_artwork_slot_outcome_repository import FakeArtworkSlotOutcomeRep
 from fakes.fake_bios_file_repository import FakeBiosFileRepository
 from fakes.fake_collection_sync_state_repository import FakeCollectionSyncStateRepository
 from fakes.fake_firmware_cache_repository import FakeFirmwareCacheRepository
+from fakes.fake_firmware_store_repository import FakeFirmwareLinkRepository, FakeFirmwareStoreRepository
 from fakes.fake_kv_config_repository import FakeKvConfigRepository
 from fakes.fake_platform_sync_state_repository import FakePlatformSyncStateRepository
 from fakes.fake_playtime_repository import FakePlaytimeRepository
@@ -56,6 +57,7 @@ if TYPE_CHECKING:
     from domain.bios_file import BiosFile
     from domain.collection_sync_state import CollectionSyncState
     from domain.firmware_cache import FirmwareCacheEntry
+    from domain.firmware_store import FirmwareLink, StoredFirmware
     from domain.platform_sync_state import PlatformSyncState
     from domain.playtime import Playtime
     from domain.rom import Rom
@@ -80,6 +82,8 @@ class _Snapshot:
     artwork_slot_handovers: dict[int, dict[ArtworkSlot, ArtworkSlotHandover]]
     bios_files: dict[tuple[str, str], BiosFile]
     firmware_cache: dict[tuple[str, str], FirmwareCacheEntry]
+    firmware_store: dict[tuple[str, str], StoredFirmware]
+    firmware_links: dict[str, FirmwareLink]
     sync_runs: dict[str, SyncRun]
     platform_sync_state: dict[str, PlatformSyncState]
     collection_sync_state: dict[tuple[str, str], CollectionSyncState]
@@ -87,7 +91,7 @@ class _Snapshot:
 
 
 class FakeUnitOfWork:
-    """In-memory unit of work over fifteen fake repositories with commit/rollback flags."""
+    """In-memory unit of work over seventeen fake repositories with commit/rollback flags."""
 
     # Child repos whose aggregate carries a ``rom_id`` foreign key onto ``roms``
     # (schema: rom_installs / rom_metadata / rom_playtime / rom_save_sync_states +
@@ -120,6 +124,8 @@ class FakeUnitOfWork:
         self.artwork_slot_handovers = FakeArtworkSlotHandoverRepository()
         self.bios_files = FakeBiosFileRepository()
         self.firmware_cache = FakeFirmwareCacheRepository()
+        self.firmware_store = FakeFirmwareStoreRepository()
+        self.firmware_links = FakeFirmwareLinkRepository()
         self.sync_runs = FakeSyncRunRepository()
         self.platform_sync_state = FakePlatformSyncStateRepository()
         self.collection_sync_state = FakeCollectionSyncStateRepository()
@@ -157,6 +163,8 @@ class FakeUnitOfWork:
             artwork_slot_handovers=self.artwork_slot_handovers._snapshot(),
             bios_files=self.bios_files._snapshot(),
             firmware_cache=self.firmware_cache._snapshot(),
+            firmware_store=self.firmware_store._snapshot(),
+            firmware_links=self.firmware_links._snapshot(),
             sync_runs=self.sync_runs._snapshot(),
             platform_sync_state=self.platform_sync_state._snapshot(),
             collection_sync_state=self.collection_sync_state._snapshot(),
@@ -206,6 +214,8 @@ class FakeUnitOfWork:
         self.artwork_slot_handovers._restore(snapshot.artwork_slot_handovers)
         self.bios_files._restore(snapshot.bios_files)
         self.firmware_cache._restore(snapshot.firmware_cache)
+        self.firmware_store._restore(snapshot.firmware_store)
+        self.firmware_links._restore(snapshot.firmware_links)
         self.sync_runs._restore(snapshot.sync_runs)
         self.platform_sync_state._restore(snapshot.platform_sync_state)
         self.collection_sync_state._restore(snapshot.collection_sync_state)
