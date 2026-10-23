@@ -149,3 +149,8 @@ export function lastPathSegment(path: string): string {
   while (end > 0 && path[end - 1] === "/") end--;
   return path.slice(path.lastIndexOf("/", end - 1) + 1, end);
 }
+
+/** RomM's earned date, `YYYY-MM-DD HH:MM:SS`, without its seconds. */
+export function formatCheevoDate(dateStr: string): string {
+  return dateStr.replace(/:\d{2}$/, "");
+}
