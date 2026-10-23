@@ -33,7 +33,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
 
     from domain.live_device_id import LiveDeviceId
-    from domain.save_answer import SaveAnswer
+    from domain.save_answer import SaveAnswer, SaveComponent
     from domain.save_measure import SaveFileMeasure
     from services.protocols import (
         Clock,
@@ -540,20 +540,28 @@ class MatrixExecutor:
         errors.append(f"{filename}: {_msg}")
 
     def _build_local_input(
-        self, local_path: str, filename: str, measure: SaveFileMeasure | None, mtime: float | None
+        self,
+        local_path: str,
+        filename: str,
+        measure: SaveFileMeasure | None,
+        mtime: float | None,
+        size_fixed: bool | None,
     ) -> dict[str, Any]:
         """Build the dict shape consumed by ``compute_sync_action``.
 
-        ``size_fixed`` is left out, which the core reads as unknown: nothing
-        Tender reads states whether a save's size is fixed.
+        ``size_fixed`` is stated only where the save answer establishes it; left
+        out, the core reads it as unknown.
         """
-        return {
+        local_input: dict[str, Any] = {
             "filename": filename,
             "path": local_path,
             "size": measure.size if measure is not None else None,
             "content_size": measure.content_size if measure is not None else None,
             "mtime": mtime,
         }
+        if size_fixed is not None:
+            local_input["size_fixed"] = size_fixed
+        return local_input
 
     def build_sync_conflict_entry(
         self,
@@ -829,15 +837,19 @@ class MatrixExecutor:
         save_state: RomSaveSyncState | None,
         device_id: str | None,
         info: dict[str, Any],
-        save_names: tuple[str, ...],
+        synced_files: tuple[SaveComponent, ...],
         saves_dir: str | None,
     ) -> Iterator[MatrixOutcome]:
         """Yield one :class:`MatrixOutcome` per save file in the ROM's active slot.
 
-        *save_names* and *saves_dir* are the save answer's, resolved once by the
-        caller: reading them again here would put a second live reading of the
-        machine on every ROM of a whole-library sweep. A ``None`` directory is
-        the refusing answer's pairing — nothing local is probed for.
+        *synced_files* and *saves_dir* are the save answer's, resolved once by
+        the caller: reading them again here would put a second live reading of
+        the machine on every ROM of a whole-library sweep. A ``None`` directory
+        is the refusing answer's pairing — nothing local is probed for. A file's
+        name and its size claim are both read off *synced_files*, so every
+        caller decides a file by the same claim; the claim is the one stated in
+        *saves_dir*, the directory every name is probed in
+        (save-file-sync-architecture.md, "Inputs").
 
         Walks the local saves directory + server-only canonical targets,
         runs ``compute_sync_action`` against the per-filename inputs, and
@@ -849,6 +861,8 @@ class MatrixExecutor:
 
         files_state: dict[str, FileSyncState] = save_state.files if save_state else {}
         device_id_str = device_id or ""
+        save_names = tuple(component.name for component in synced_files)
+        size_claims = {c.name: c.size_fixed for c in synced_files if c.directory == saves_dir}
 
         local_files = self._rom_info.probe_save_files(list(save_names), saves_dir)
 
@@ -863,7 +877,12 @@ class MatrixExecutor:
             # file would be evaluated/dispatched against the wrong save.
             group = [ss for ss in server_in_slot if local_save_target(ss, rom_name, known_names=save_names) == filename]
             yield self._local_outcome(
-                filename, lf["path"], group, files_state.get(filename, FileSyncState()), device_id_str
+                filename,
+                lf["path"],
+                group,
+                files_state.get(filename, FileSyncState()),
+                device_id_str,
+                size_claims.get(filename),
             )
 
         # Group server saves by canonical local target filename. Server-only
@@ -921,6 +940,7 @@ class MatrixExecutor:
         group: list[dict[str, Any]],
         file_state: FileSyncState,
         device_id: str,
+        size_fixed: bool | None,
     ) -> MatrixOutcome:
         """Measure the local file at *local_path* and decide it against its server *group*."""
         local_exists = self._save_file_store.is_file(local_path)
@@ -931,7 +951,7 @@ class MatrixExecutor:
         local_hash = measure.content_hash if measure is not None else None
         local_mtime = self._save_file_store.get_mtime(local_path) if local_exists else None
         action = self._compute_sync_action(
-            local_file=self._build_local_input(local_path, filename, measure, local_mtime),
+            local_file=self._build_local_input(local_path, filename, measure, local_mtime, size_fixed),
             server_saves_in_slot=group,
             files_state=_file_state_to_dict(file_state),
             device_id=device_id,
@@ -1046,7 +1066,7 @@ class MatrixExecutor:
             save_state=save_state,
             device_id=device_id,
             info=info,
-            save_names=save_names,
+            synced_files=answer.synced_files,
             # The ANSWER's directory, which is None wherever the answer refuses,
             # so the pairing that makes a refusal probe nothing survives here too.
             saves_dir=answer_dir,
