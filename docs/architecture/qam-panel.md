@@ -488,14 +488,14 @@ action-button enum (`A=0, B=1, X=2, Y=3`), **not** `@decky/ui`'s `GamepadButton`
 every value, and the wrong one draws the wrong glyph without failing.
 
 **A tabbed wide page has to get out of the way for that to work.** Steam's tabbed page renders its content pane as
-`onCancelButton: !cancelSkipTabHeader && <focus the tab row>` (`chunk~2dcc5aaf7.js`), so without the flag the first B
-inside a tab is spent moving focus to the tab row and never reaches the router. `WidePage` passes `cancelSkipTabHeader`
-— Steam's own prop, which it uses in its controller-configurator dialogs, and which upstream's `TabsProps` predates;
-`frontend/src/utils/deckyUiInternals.ts` types it. After a navigation the router scrolls the panel to the top, and
-gamepad focus is placed where the page opens — by the router for a narrow page, at the area the page declared or at its
-first stop where it declared none, and by the frame itself for a wide one, which says so on its root so the router
-leaves it alone (see "Building blocks → Tabs"). The module-level `currentPage` survives a QAM remount, so reopening the
-QAM lands on the page that was open, and a wide page re-expands on mount.
+`onCancelButton: !cancelSkipTabHeader && <focus the tab row>` (`steamui/sp.js`, the `TabContents` `Focusable`), so
+without the flag the first B inside a tab is spent moving focus to the tab row and never reaches the router. `WidePage`
+passes `cancelSkipTabHeader` — Steam's own prop, which it uses in its controller-configurator dialogs, and which
+upstream's `TabsProps` predates; `frontend/src/utils/deckyUiInternals.ts` types it. After a navigation the router
+scrolls the panel to the top, and gamepad focus is placed where the page opens — by the router for a narrow page, at the
+area the page declared or at its first stop where it declared none, and by the frame itself for a wide one, which says
+so on its root so the router leaves it alone (see "Building blocks → Tabs"). The module-level `currentPage` survives a
+QAM remount, so reopening the QAM lands on the page that was open, and a wide page re-expands on mount.
 
 **Entry focus is placed on a page swap and never when the panel appears.** Steam mounts the panel as soon as the Quick
 Access strip highlights Tender's Quick Access entry, so focus placed on that mount would take the reader off the strip
@@ -536,8 +536,9 @@ preference, entry lands where Steam decides, and the panel still takes no focus 
 
 ### Tabs
 
-Steam's tabbed page, switched with L1/R1, for two to four peer views of one page. Wide pages only: at 300 px the bumper
-glyphs overlap the labels, which is why the Library page's tab bar is hand-rolled today. Only Library has tabs.
+Steam's tabbed page, switched with L1/R1, for a handful of peer views of one page. Wide pages only: at 300 px the bumper
+glyphs overlap the labels. In the panel only Library has tabs; outside it, Tender's section on a game page is the same
+component (§ The game page's tabs).
 
 On a page opened by a swap, entry focus lands in the content — the active tab's, so the list of a list-and-detail page —
 and the bumper glyphs follow, because Steam draws them only while gamepad focus is within the tabbed page. Entering a
@@ -615,6 +616,69 @@ from the frame would only nest a second scroller around it. Rows of one column t
 added. A page that needs more than that one scroller — a list and a detail scrolling independently side by side — builds
 its regions with `ScrollRegion` itself, which is what Library's tabs do, and an untabbed page that does the same says so
 with `ownRegions` so the frame wraps its body in none either.
+
+### The game page's tabs
+
+Tender's section on a RomM game's page ([frontend-bundles.md](frontend-bundles.md#tenders-section-on-steams-game-page))
+is not part of the panel, but its tabs are this same component: **GAME INFO**, **ACHIEVEMENTS**, **SAVES**, **BIOS** and
+**ARTWORK** are Steam's tabbed page (`bigpicture/GamePageTabs.tsx`), in that order (`buildPanelTabs`,
+`bigpicture/panelTabContent.tsx`). So L1 and R1, the wrap-around, the bumper glyphs, a tab switching as soon as focus
+lands on it, and each tab keeping where focus stood are Steam's. ACHIEVEMENTS is handed to it for a game
+RetroAchievements knows (an `ra_id`) and SAVES while save sync is on, so a tab that is not shown is not stepped onto
+either. Steam's own game page steps its own tabs with L1 and R1 the same way; on a RomM game Tender's section takes that
+panel's place, so nothing of Steam's is left handling the bumpers there (#2421 D2).
+
+**Height and scrolling are Steam's game page's.** The tabbed page has no height of its own — its tab row and its content
+are positioned absolutely (`steamui/css/sp.css`, `GamepadTabbedPage`) — and Steam's game page passes
+`canBeHeaderBackground: "on-outer-scroll"` (`steamui/sp.js`, the app details' tabbed page), which Steam's stylesheet
+turns into one screen less Steam's header; once the page has scrolled the tabbed page up under that header, it reaches
+up behind it and its tab row takes a blurred backdrop (`IsUnderHeader`). Tender passes the same, so a tab's pane scrolls
+inside that box rather than the page growing with it. Focus coming into the tabs from outside them scrolls the game page
+so they stand `STEAM_HEADER_PADDING_PX` (40 px, Steam's `headerPadding`) below its top, and focus coming to the play row
+scrolls it back (`scrollToTop` on the row) — as Steam's own page does around its tabbed page. That scroll is Tender's
+because Steam's lives in the overview panel Tender's section replaces, not in the tabbed page.
+
+**Once the tabs stand at the top, moving focus inside them scrolls only inside them.** Two things would otherwise move
+the game page:
+
+- **A pane's own focus scroll.** Tender's rows centre themselves in the nearest scroller that overflows
+  (`scrollFocusedToCenter`, `utils/scrollHelpers.ts`). Where a pane's rows all fit, Steam's per-tab scroller does not
+  overflow, and the nearest one that does is the game page around the tabs. The tabs carry `SCROLL_BOUNDARY_CLASS`, past
+  which that walk does not go, so such a row is not scrolled at all.
+- **Steam's scroll to a focus put back after a tab switch.** Steam slides the incoming pane in from the side
+  (`translateX(±40%)`, `steamui/css/sp.css`) and puts focus back in it before it has arrived. Its own focus scroll hands
+  that element to the browser's `scrollIntoView` (`steamui/sp.js`), which scrolls every scroller around it sideways to
+  reach it, the game page's included — that one cannot be scrolled sideways by hand, but a background image of Steam's
+  inside it is wider than the page, so a call can scroll it. The tabs declare Steam's `scrollIntoViewType` NoTransform,
+  under which Steam brings a focused element into view by its laid-out position instead, with the slide not counted.
+  Steam's own game page passes its tabbed page none and goes through the same code; whether it shows the same shift was
+  not measured.
+
+**B steps back as on Steam's own game page** (#2421 D5): in a pane it puts focus on the tab row, on the tab row it puts
+focus on the play row, and only on the play row does it leave the page. The first step is Steam's tabbed page's own —
+the content pane's handler for B (§ Pages), which the Library page turns off with `cancelSkipTabHeader` and the game
+page leaves on. The second is `onCancelFromTabHeader`, which the tabbed page binds as its own cancel handler, so B
+reaches it from the tab row; Steam's game page puts focus on its Play button there, and Tender's puts it on the play
+row's first stop, its Play button — the row registers its element with the scope (`bigpicture/tabStepping.tsx`). Focus
+landing on the play row scrolls the page back to the top, as moving there by the d-pad does. Where no play row is
+registered the handler answers `false`, and B goes on as it would from the play row. Nothing on the play row takes B, so
+there it reaches Steam's page. Entry focus is not placed in a pane (`autoFocusContents: false`, as Steam's game page
+passes), so the page still opens on the play row.
+
+**L1 and R1 from the play row are Tender's own.** Steam handles the bumpers on its tab row and its content and stops
+them there; the play row is outside the tabbed page, and Steam's own play bar handles no bumper. So the play row carries
+a handler that steps the shown tabs the same way, going round at either end, and the tabs register how they step while
+they are shown (`bigpicture/tabStepping.tsx`, the same shape as L2 and R2's `emulatorStepping.tsx`). L2 and R2 reach the
+BIOS tab's emulator selector from the tab row and from every pane through one handler around the tabbed page, since
+Steam's tab row and content pass the triggers on (Library › BIOS, "L2 and R2 step the same way").
+
+**A pane keeps what it holds because the panel holds it.** Steam mounts only the active tab's pane, keyed by tab id, so
+a switch unmounts the pane it leaves. The BIOS tab's own state — the emulator shown, a press under way and the line it
+left — is `useBiosTab`'s, and the achievements' load, made once until the ROM changes, is `useAchievements`'s; the panel
+calls both. SAVES reads the panel's state already, and ARTWORK's slots are held in `utils/artworkSlotsStore.ts` and read
+again on every opening. Where focus stood is Steam's to put back: its tabbed page saves the pane's navigation state per
+tab id and restores it a moment after the switch, which finds a row only if the pane draws it at once — a pane that came
+back on a spinner would put focus nowhere.
 
 ### Scrolling a region without moving focus
 
@@ -1514,33 +1578,34 @@ it, for the focused platform:
   (`ControllerGlyph`, drawn for the controller that is connected), with a small key box in their place where that probe
   misses; no footer legend entry is added. L2 and R2 step the same way (#2190 D31): on the Library's Platforms page
   wherever focus is on the page, the platform list included, and on a game's page wherever focus is in Tender's section
-  — the play row, the tab bar and the tab's content — while the BIOS tab is open. As Steam's shipped client code shows
+  — the play row, the tab row and the tab's content — while the BIOS tab is open. As Steam's shipped client code shows
   (`steamui/sp.js`), it dispatches a gamepad button as a DOM event on the focused element, which bubbles up through its
   ancestors until a handler stops it (its client wires `onButtonDown` as a listener and hands an unstopped event to its
-  root), so the handler sits on the nodes each scope is made of (`ListDetail`'s columns; the play row, the tab bar and
-  the tab content, inside `EmulatorStepScope` in `patches/rommOverviewBlock.tsx`), and the selector registers how it
-  steps while it is shown (`bigpicture/emulatorStepping.tsx`). Where no selector is shown — fewer than two emulators,
-  the BIOS tab closed — the triggers go on to Steam untouched, and no other button is taken: L1 and R1 stay the page's
-  tabs'. Steam's own parts of a game page are outside Tender's section and are not reached. Under the top row a carousel
-  holds every entry with its dot, in `NOTE_FONT`: the shown one in the middle and outlined, the others on either side in
-  stepping order and wrapping around (`utils/emulatorCarousel.ts`), its edges faded out. Every emulator stands in it
-  once, however few there are (#2190 D33), installed or not: one that is not installed (`installed: false`, the picker's
-  own reading) stays, its name in red. The launching emulator's entry is outlined in the accent its name takes, which
-  keeps it known where its name is red, and the shown one otherwise in light grey. A launching emulator nothing
-  identifies has no entry at all rather than one under a made-up name; the selector then opens on the first emulator it
-  lists. Every entry is a focus stop of its own and is chosen by pressing it, never by focus landing on it; a step
-  slides the carousel, because each entry is one element moved to its place rather than rendered there. Steam's own
-  `Dropdown` is not used, because in Game Mode it opens its menu over the whole screen. Every entry is read from the
-  answer it is rendered with, by its identity, so the re-read after a download recolours the dot together with the
-  header. One identity is one entry however many labels the emulator list gives it, named by all of them joined " / " in
-  the list's own order — "LRPS2 / PCSX2" for `pcsx2_libretro.so` — whichever is the pick, built where the entries are
-  (`emulator_tabs` in `services/firmware/emulator_answers.py`, #2190 D28). It sits ABOVE the table it switches, so focus
-  reaches it first, and it is drawn only where the payload names more than one emulator. The launching emulator's rows
-  are the payload's own `files` less the library section's; another emulator's are its own requirements exactly as the
-  resolver answers them, and they read and act like any other row (#2190 D30). The library files no emulator here claims
-  (`declared_by` null, `wanted` `not_needed` or `unknown` — `isUnclaimedLibraryRow` in `frontend/src/utils/biosTabs.ts`)
-  are no emulator's rows and stand in a section of their own, below. Choosing an emulator never changes what launches:
-  the summary and its counts stay the launching emulator's, while the table, its per-row buttons and `Download required`
+  root), so the handler sits on the nodes each scope is made of (`ListDetail`'s columns; the play row and the one node
+  around the game page's tabbed page, which Steam's tab row and content pass the triggers on to, inside
+  `EmulatorStepScope` in `patches/rommOverviewBlock.tsx`), and the selector registers how it steps while it is shown
+  (`bigpicture/emulatorStepping.tsx`). Where no selector is shown — fewer than two emulators, the BIOS tab closed — the
+  triggers go on to Steam untouched, and no other button is taken: L1 and R1 stay the page's tabs'. Steam's own parts of
+  a game page are outside Tender's section and are not reached. Under the top row a carousel holds every entry with its
+  dot, in `NOTE_FONT`: the shown one in the middle and outlined, the others on either side in stepping order and
+  wrapping around (`utils/emulatorCarousel.ts`), its edges faded out. Every emulator stands in it once, however few
+  there are (#2190 D33), installed or not: one that is not installed (`installed: false`, the picker's own reading)
+  stays, its name in red. The launching emulator's entry is outlined in the accent its name takes, which keeps it known
+  where its name is red, and the shown one otherwise in light grey. A launching emulator nothing identifies has no entry
+  at all rather than one under a made-up name; the selector then opens on the first emulator it lists. Every entry is a
+  focus stop of its own and is chosen by pressing it, never by focus landing on it; a step slides the carousel, because
+  each entry is one element moved to its place rather than rendered there. Steam's own `Dropdown` is not used, because
+  in Game Mode it opens its menu over the whole screen. Every entry is read from the answer it is rendered with, by its
+  identity, so the re-read after a download recolours the dot together with the header. One identity is one entry
+  however many labels the emulator list gives it, named by all of them joined " / " in the list's own order — "LRPS2 /
+  PCSX2" for `pcsx2_libretro.so` — whichever is the pick, built where the entries are (`emulator_tabs` in
+  `services/firmware/emulator_answers.py`, #2190 D28). It sits ABOVE the table it switches, so focus reaches it first,
+  and it is drawn only where the payload names more than one emulator. The launching emulator's rows are the payload's
+  own `files` less the library section's; another emulator's are its own requirements exactly as the resolver answers
+  them, and they read and act like any other row (#2190 D30). The library files no emulator here claims (`declared_by`
+  null, `wanted` `not_needed` or `unknown` — `isUnclaimedLibraryRow` in `frontend/src/utils/biosTabs.ts`) are no
+  emulator's rows and stand in a section of their own, below. Choosing an emulator never changes what launches: the
+  summary and its counts stay the launching emulator's, while the table, its per-row buttons and `Download required`
   follow the shown one. Then a table: File, On disk, Contents, and one button per row
   ([#2191](https://github.com/danielcopper/romm-tender/issues/2191)): **Download** where a RomM library file fills the
   row (`library` — by its content, or by name where the resolver's identity is an archive or names no checksum), RomM
@@ -1630,7 +1695,7 @@ it, for the focused platform:
   fits. "Emulator" and never "core": what a platform launches with can be a STANDALONE emulator, which is not a core,
   and the whole answer is keyed on the emulator's identity for that reason.
 
-  **The game page's BIOS tab is in the tab bar for every game from the moment the page opens**, and no answer takes it
+  **The game page's BIOS tab is among its tabs for every game from the moment the page opens**, and no answer takes it
   away. The cached detail carries no BIOS answer, so the tab's comes from the live `get_bios_status` read a moment
   later, and the tab tells three states apart off `frontend/src/utils/biosReadState.ts`, the derivation the platform
   page's BIOS block reads too: while the answer is still out, the `BIOS` heading over "Checking…" behind Steam's spinner

@@ -12,10 +12,11 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { render, act, fireEvent } from "@testing-library/react";
-import { createElement, useSyncExternalStore, type ComponentProps, type ReactElement } from "react";
-import { showModal } from "@decky/ui";
+import { createElement, useSyncExternalStore, type ComponentProps, type FC, type ReactElement } from "react";
+import { Focusable, showModal } from "@decky/ui";
 import { RomMGameInfoPanel } from "./RomMGameInfoPanel";
 import { EmulatorStepScope, useStepOnTriggers } from "./emulatorStepping";
+import { TabStepScope, useBumperHandler } from "./tabStepping";
 import * as backend from "../api/backend";
 import type { BiosAnswer, CachedGameDetail } from "../api/backend";
 import { HostTransportError } from "../api/host";
@@ -110,6 +111,13 @@ vi.mock("../utils/slotState", () => ({
 }));
 
 vi.mock("../utils/scrollHelpers", () => ({ scrollFocusedToCenter: vi.fn() }));
+
+// The game page's tabs reach Steam's tabbed page through this module, a webpack
+// probe with no answer under happy-dom.
+vi.mock("../utils/deckyUiInternals", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../utils/deckyUiInternals")>()),
+  Tabs: (await import("../test-utils/steamTabs")).StubTabs,
+}));
 
 // ----- cachedGameDetailStore — re-exported through backend.ts but its
 // canonical home is utils. Mock the store so the re-export and direct
@@ -430,7 +438,7 @@ describe("RomMGameInfoPanel", () => {
         </EmulatorStepScope>,
       );
       await flushAsync();
-      const content = container.querySelector(".romm-tab-content") as HTMLElement;
+      const content = container.querySelector(".romm-game-page-tabs") as HTMLElement;
       fireEvent(content, new CustomEvent("decky-button-down", { detail: { button: 8 }, bubbles: true }));
       expect(step).toHaveBeenCalledWith(1);
     });
@@ -1294,7 +1302,7 @@ describe("RomMGameInfoPanel", () => {
         await Promise.resolve();
       });
       expect(vi.mocked(backend.getSaveStatus)).not.toHaveBeenCalled();
-      // SAVES tab now hidden in the rendered tab bar.
+      // SAVES tab now hidden in the rendered tab row.
       expect(container.textContent).not.toContain("SAVES");
     });
 
@@ -2140,7 +2148,7 @@ describe("RomMGameInfoPanel", () => {
         await Promise.resolve();
         await Promise.resolve();
       });
-      expect(getByText("BIOS", { selector: ".romm-tab" })).not.toBeNull();
+      expect(getByText("BIOS", { selector: '[role="tab"]' })).not.toBeNull();
       expect(container.textContent).toContain(NO_BIOS_NEEDED_SENTENCE);
       expect(container.textContent).not.toContain("1/2");
       // The selector over the platform's two emulators.
@@ -2723,7 +2731,7 @@ describe("RomMGameInfoPanel", () => {
       expect(container.textContent).toContain("ACHIEVEMENTS");
     });
 
-    it("BIOS tab is in the tab bar the moment the page opens, before any BIOS answer", async () => {
+    it("BIOS tab is in the tab row the moment the page opens, before any BIOS answer", async () => {
       vi.mocked(cachedStore.getCachedGameDetail).mockResolvedValue({
         found: true,
         rom_id: 1,
@@ -2735,7 +2743,7 @@ describe("RomMGameInfoPanel", () => {
       vi.mocked(backend.getBiosStatus).mockReturnValue(new Promise(() => {}));
       const { getByText } = render(<RomMGameInfoPanel appId={testAppId} />);
       await flushAsync();
-      expect(getByText("BIOS", { selector: ".romm-tab" })).not.toBeNull();
+      expect(getByText("BIOS", { selector: '[role="tab"]' })).not.toBeNull();
     });
 
     it("SAVES tab visible only when save_sync_enabled=true", async () => {
@@ -4179,7 +4187,7 @@ describe("RomMGameInfoPanel", () => {
       });
       const { container, getByText, getByTestId } = render(<RomMGameInfoPanel appId={testAppId} />);
       await flushAsync();
-      expect(getByText("BIOS", { selector: ".romm-tab" })).not.toBeNull();
+      expect(getByText("BIOS", { selector: '[role="tab"]' })).not.toBeNull();
       await showBiosTab();
       expect(getByTestId("waiting-line").textContent).toBe("Checking…");
       expect(getByTestId("spinner")).not.toBeNull();
@@ -4215,7 +4223,7 @@ describe("RomMGameInfoPanel", () => {
       await flushAsync();
       await showBiosTab();
 
-      expect(getByText("BIOS", { selector: ".romm-tab" })).not.toBeNull();
+      expect(getByText("BIOS", { selector: '[role="tab"]' })).not.toBeNull();
       expect(container.textContent).toContain(NO_BIOS_NEEDED_SENTENCE);
       expect(container.textContent).not.toContain("Checking…");
     });
@@ -5291,7 +5299,7 @@ describe("RomMGameInfoPanel", () => {
 
         await switchToRom2();
 
-        expect(getByText("BIOS", { selector: ".romm-tab" })).not.toBeNull();
+        expect(getByText("BIOS", { selector: '[role="tab"]' })).not.toBeNull();
         expect(queryByTestId("saves-tab")).toBeNull();
         expect(container.textContent).toContain("Game (Japan)");
       });
@@ -5445,7 +5453,7 @@ describe("RomMGameInfoPanel", () => {
 
         // Asserted on the BIOS tab's BODY as well as its button: the body is
         // what a fallback to GAME INFO would replace.
-        expect(getByText("BIOS", { selector: ".romm-tab" }).className).toContain("romm-tab-active");
+        expect(getByText("BIOS", { selector: '[role="tab"]' }).getAttribute("aria-selected")).toBe("true");
         expect(container.textContent).toContain("Checking…");
         expect(container.textContent).not.toContain("No metadata available");
       });
@@ -5828,7 +5836,7 @@ describe("RomMGameInfoPanel", () => {
         });
         await flushAsync();
 
-        // The switched-to version has save sync off, so its tab bar carries no
+        // The switched-to version has save sync off, so its tab row carries no
         // SAVES tab — the refused write is what keeps it that way.
         expect(container.textContent).not.toContain("SAVES");
       });
@@ -6367,6 +6375,317 @@ describe("RomMGameInfoPanel", () => {
 
       expect(queryByTestId("saves-tab")).not.toBeNull();
       expect(queryByTestId("slot-setup-wizard")).toBeNull();
+    });
+  });
+
+  describe("the game page's tabs (#2421)", () => {
+    const L1 = 5;
+    const R1 = 6;
+    const R2 = 8;
+    const pull = (from: Element, button: number) =>
+      fireEvent(from, new CustomEvent("decky-button-down", { detail: { button }, bubbles: true }));
+    const tabIds = (container: HTMLElement) =>
+      [...container.querySelectorAll('[role="tab"]')].map((tab) => tab.getAttribute("data-testid"));
+    const shownTab = (container: HTMLElement) =>
+      container.querySelector('[role="tab"][aria-selected="true"]')?.getAttribute("data-testid");
+    const press = async (container: HTMLElement, testId: string) => {
+      await act(async () => {
+        fireEvent.click(container.querySelector(`[data-testid="${testId}"]`) as HTMLElement);
+      });
+      await flushAsync();
+    };
+
+    /** The play row's stand-in: a node of Tender's section outside the tabs, carrying the play row's bumper handler. */
+    const PlayRow: FC = () => (
+      <Focusable className="play-row-stand-in" onButtonDown={useBumperHandler()}>
+        <button type="button">Play</button>
+      </Focusable>
+    );
+    const section = () =>
+      render(
+        <TabStepScope>
+          <PlayRow />
+          <RomMGameInfoPanel appId={testAppId} />
+        </TabStepScope>,
+      );
+    const playRow = (container: HTMLElement) => container.querySelector(".play-row-stand-in") as HTMLElement;
+    const detail = (overrides: Partial<CachedGameDetail> = {}): CachedGameDetail => ({
+      found: true,
+      rom_id: 31,
+      platform_slug: "snes",
+      metadata: makeMetadata(),
+      stale_fields: [],
+      ...overrides,
+    });
+
+    it("hands Steam's tabbed page every tab in its fixed order, each with its title", async () => {
+      vi.mocked(cachedStore.getCachedGameDetail).mockResolvedValue(detail({ ra_id: 7, save_sync_enabled: true }));
+      const { container } = render(<RomMGameInfoPanel appId={testAppId} />);
+      await flushAsync();
+      expect(tabIds(container)).toEqual(["tab-info", "tab-achievements", "tab-saves", "tab-bios", "tab-artwork"]);
+      expect([...container.querySelectorAll('[role="tab"]')].map((tab) => tab.textContent)).toEqual([
+        "GAME INFO",
+        "ACHIEVEMENTS",
+        "SAVES",
+        "BIOS",
+        "ARTWORK",
+      ]);
+      expect(shownTab(container)).toBe("tab-info");
+    });
+
+    it("leaves ACHIEVEMENTS and SAVES out of the tabbed page for a game without an ra_id and with save sync off", async () => {
+      vi.mocked(cachedStore.getCachedGameDetail).mockResolvedValue(detail());
+      const { container } = render(<RomMGameInfoPanel appId={testAppId} />);
+      await flushAsync();
+      expect(tabIds(container)).toEqual(["tab-info", "tab-bios", "tab-artwork"]);
+    });
+
+    it("shows the tab Steam's tabbed page reports shown", async () => {
+      vi.mocked(cachedStore.getCachedGameDetail).mockResolvedValue(detail());
+      const { container } = render(<RomMGameInfoPanel appId={testAppId} />);
+      await flushAsync();
+      await press(container, "tab-bios");
+      expect(shownTab(container)).toBe("tab-bios");
+      expect(container.querySelector('[data-testid="steam-tab-content"]')?.textContent).toContain("BIOS");
+    });
+
+    it("steps to the next shown tab with R1 from the play row, skipping a tab not shown", async () => {
+      vi.mocked(cachedStore.getCachedGameDetail).mockResolvedValue(detail({ save_sync_enabled: true }));
+      const { container } = section();
+      await flushAsync();
+      await act(async () => {
+        pull(playRow(container), R1);
+      });
+      expect(shownTab(container)).toBe("tab-saves");
+      await act(async () => {
+        pull(playRow(container), R1);
+      });
+      expect(shownTab(container)).toBe("tab-bios");
+    });
+
+    it("steps back with L1 from the play row, going round from the first tab to the last and on to the first", async () => {
+      vi.mocked(cachedStore.getCachedGameDetail).mockResolvedValue(detail());
+      const { container } = section();
+      await flushAsync();
+      await act(async () => {
+        pull(playRow(container), L1);
+      });
+      expect(shownTab(container)).toBe("tab-artwork");
+      await act(async () => {
+        pull(playRow(container), R1);
+      });
+      expect(shownTab(container)).toBe("tab-info");
+    });
+
+    it("on the BIOS tab, lets L2 and R2 step the emulators and never the tabs", async () => {
+      vi.mocked(cachedStore.getCachedGameDetail).mockResolvedValue(detail());
+      const step = vi.fn();
+      const Selector = () => {
+        useStepOnTriggers(step);
+        return null;
+      };
+      const { container } = render(
+        <EmulatorStepScope>
+          {() => (
+            <TabStepScope>
+              <Selector />
+              <PlayRow />
+              <RomMGameInfoPanel appId={testAppId} />
+            </TabStepScope>
+          )}
+        </EmulatorStepScope>,
+      );
+      await flushAsync();
+      await press(container, "tab-bios");
+      await act(async () => {
+        pull(container.querySelector('[data-testid="tab-info"]') as HTMLElement, R2);
+        pull(container.querySelector('[data-testid="steam-tab-content"]') as HTMLElement, R2);
+        pull(playRow(container), R2);
+      });
+      expect(step.mock.calls).toEqual([[1], [1]]);
+      expect(shownTab(container)).toBe("tab-bios");
+    });
+
+    it("hands Steam's tabbed page a shown tab after a switch to a version without the one that was open", async () => {
+      vi.mocked(cachedStore.getCachedGameDetail).mockResolvedValue(detail({ rom_id: 1, ra_id: 7 }));
+      const { container, getByTestId } = section();
+      await flushAsync();
+      await press(container, "tab-achievements");
+      expect(getByTestId("steam-tabs").getAttribute("data-active-tab")).toBe("achievements");
+
+      vi.mocked(cachedStore.getCachedGameDetail).mockResolvedValue(detail({ rom_id: 2 }));
+      await act(async () => {
+        globalThis.dispatchEvent(
+          new CustomEvent("romm_data_changed", {
+            detail: { type: "version_switched", app_id: testAppId, rom_id: 2 },
+          }),
+        );
+      });
+      await flushAsync();
+      expect(tabIds(container)).toEqual(["tab-info", "tab-bios", "tab-artwork"]);
+      expect(getByTestId("steam-tabs").getAttribute("data-active-tab")).toBe("info");
+
+      await act(async () => {
+        pull(playRow(container), R1);
+      });
+      expect(shownTab(container)).toBe("tab-bios");
+    });
+
+    it("shows no achievements of the version switched away from while the new one's cannot load", async () => {
+      vi.mocked(cachedStore.getCachedGameDetail).mockResolvedValue(detail({ rom_id: 1, ra_id: 7 }));
+      vi.mocked(backend.getAchievements).mockResolvedValue({
+        success: true,
+        total: 1,
+        achievements: [
+          {
+            ra_id: 1,
+            badge_id: "b1",
+            title: "First Steps",
+            description: "Did the thing",
+            points: 5,
+            badge_url: "http://example/b1.png",
+            badge_url_lock: "http://example/b1-lock.png",
+            display_order: 1,
+            type: "win",
+            num_awarded: 1,
+            num_awarded_hardcore: 0,
+          },
+        ],
+      });
+      vi.mocked(backend.getAchievementProgress).mockResolvedValue({
+        success: true,
+        earned: 0,
+        earned_hardcore: 0,
+        total: 1,
+        earned_achievements: [],
+      });
+      const { container } = render(<RomMGameInfoPanel appId={testAppId} />);
+      await flushAsync();
+      await press(container, "tab-achievements");
+      expect(container.textContent).toContain("First Steps");
+
+      // Offline, so nothing is loaded for the version switched to.
+      act(() => {
+        setRommConnectionState("offline");
+      });
+      vi.mocked(cachedStore.getCachedGameDetail).mockResolvedValue(detail({ rom_id: 2, ra_id: 8 }));
+      await act(async () => {
+        globalThis.dispatchEvent(
+          new CustomEvent("romm_data_changed", {
+            detail: { type: "version_switched", app_id: testAppId, rom_id: 2 },
+          }),
+        );
+      });
+      await flushAsync();
+      expect(container.textContent).not.toContain("First Steps");
+      expect(backend.getAchievements).not.toHaveBeenCalledWith(2);
+    });
+
+    it("shows no achievements of the version switched away from where the new one's cannot be read", async () => {
+      const notFound = { success: false, reason: "not_found", message: "gone" } as const;
+      vi.mocked(cachedStore.getCachedGameDetail).mockResolvedValue(detail({ rom_id: 1, ra_id: 7 }));
+      vi.mocked(backend.getAchievements).mockImplementation(async (romId) =>
+        romId === 1
+          ? {
+              success: true,
+              total: 1,
+              achievements: [
+                {
+                  ra_id: 1,
+                  badge_id: "b1",
+                  title: "First Steps",
+                  description: "Did the thing",
+                  points: 5,
+                  badge_url: "http://example/b1.png",
+                  badge_url_lock: "http://example/b1-lock.png",
+                  display_order: 1,
+                  type: "win",
+                  num_awarded: 1,
+                  num_awarded_hardcore: 0,
+                },
+              ],
+            }
+          : notFound,
+      );
+      vi.mocked(backend.getAchievementProgress).mockImplementation(async (romId) =>
+        romId === 1 ? { success: true, earned: 0, earned_hardcore: 0, total: 1, earned_achievements: [] } : notFound,
+      );
+      const { container } = render(<RomMGameInfoPanel appId={testAppId} />);
+      await flushAsync();
+      await press(container, "tab-achievements");
+      expect(container.textContent).toContain("First Steps");
+
+      vi.mocked(cachedStore.getCachedGameDetail).mockResolvedValue(detail({ rom_id: 2, ra_id: 8 }));
+      await act(async () => {
+        globalThis.dispatchEvent(
+          new CustomEvent("romm_data_changed", {
+            detail: { type: "version_switched", app_id: testAppId, rom_id: 2 },
+          }),
+        );
+      });
+      await flushAsync();
+      expect(backend.getAchievements).toHaveBeenCalledWith(2);
+      expect(container.textContent).not.toContain("First Steps");
+    });
+
+    describe("what a pane holds across a tab switch", () => {
+      it("shows the BIOS tab on the emulator it was stepped to when it is shown again", async () => {
+        const answer = noBiosNeededAnswer();
+        vi.mocked(cachedStore.getCachedGameDetail).mockResolvedValue(
+          detail({ bios_status: answer.bios_status ?? null, bios_level: "ok" }),
+        );
+        const { container } = render(<RomMGameInfoPanel appId={testAppId} />);
+        await flushAsync();
+        await press(container, "tab-bios");
+        expect(container.textContent).toContain("1 / 2");
+        fireEvent.click(container.querySelector('button[aria-label="Next emulator"]') as HTMLElement);
+        expect(container.textContent).toContain("2 / 2");
+
+        await press(container, "tab-info");
+        expect(container.textContent).not.toContain("2 / 2");
+        await press(container, "tab-bios");
+        expect(container.textContent).toContain("2 / 2");
+      });
+
+      it("shows ACHIEVEMENTS again without a second load and without a spinner", async () => {
+        vi.mocked(cachedStore.getCachedGameDetail).mockResolvedValue(detail({ ra_id: 7 }));
+        vi.mocked(backend.getAchievements).mockResolvedValue({
+          success: true,
+          total: 1,
+          achievements: [
+            {
+              ra_id: 1,
+              badge_id: "b1",
+              title: "First Steps",
+              description: "Did the thing",
+              points: 5,
+              badge_url: "http://example/b1.png",
+              badge_url_lock: "http://example/b1-lock.png",
+              display_order: 1,
+              type: "win",
+              num_awarded: 1,
+              num_awarded_hardcore: 0,
+            },
+          ],
+        });
+        vi.mocked(backend.getAchievementProgress).mockResolvedValue({
+          success: true,
+          earned: 0,
+          earned_hardcore: 0,
+          total: 1,
+          earned_achievements: [],
+        });
+        const { container } = render(<RomMGameInfoPanel appId={testAppId} />);
+        await flushAsync();
+        await press(container, "tab-achievements");
+        expect(container.textContent).toContain("First Steps");
+
+        await press(container, "tab-info");
+        fireEvent.click(container.querySelector('[data-testid="tab-achievements"]') as HTMLElement);
+        expect(container.textContent).toContain("First Steps");
+        expect(container.textContent).not.toContain("Loading achievements");
+        expect(backend.getAchievements).toHaveBeenCalledTimes(1);
+      });
     });
   });
 });
