@@ -5,26 +5,27 @@ pick **Settings** from the menu at the bottom of the panel.
 
 ## The Settings page
 
-Settings is a wide page split in two: a list of eight sections on the left, and the focused section's controls on the
+Settings is a wide page split in two: a list of ten sections on the left, and the focused section's controls on the
 right. Move onto a section in the list and the right-hand side changes at once — there is nothing to confirm.
 
-| Section              | What is in it                                                                                                                                                              |
-| -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Connections**      | the services Tender talks to: **RomM** (server URL, account, Sign out, Allow Insecure SSL) and **SteamGridDB** (the API key)                                               |
-| **Save Sync**        | the save-sync switch and its settings (device, before launch, after exit, default slot, history limit, Sync All Saves Now) and the list of registered devices              |
-| **Controller**       | Steam Input Mode and Apply to All Shortcuts                                                                                                                                |
-| **Steam Library**    | preferred region, collection games in platform groups, collection types in Steam names                                                                                     |
-| **Emulator sources** | every emulator setup Tender found — RetroDECK, EmuDeck, a RetroArch of its own — as a numbered card with its health, **Use this source**, and arrows to move it up or down |
-| **Tender folder**    | where Tender keeps its own files: the current place, the internal storage, each writable drive with its free space, and **Another folder…**                                |
-| **Updates**          | the version you have and the release the last successful check found, an update that was rolled back or refused, the daily update check, and **Check now**                 |
-| **Interface**        | whether Tender's Quick Access entry sits above or below Decky Loader's                                                                                                     |
-| **Advanced**         | log level                                                                                                                                                                  |
+| Section              | What is in it                                                                                                                                                                   |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Connections**      | the services Tender talks to: **RomM** (server URL, account, Sign out, Allow Insecure SSL) and **SteamGridDB** (the API key)                                                    |
+| **Save Sync**        | the save-sync switch and its settings (device, before launch, after exit, default slot, history limit, Sync All Saves Now) and the list of registered devices                   |
+| **Controller**       | Steam Input Mode and Apply to All Shortcuts                                                                                                                                     |
+| **Steam Library**    | preferred region, collection games in platform groups, collection types in Steam names                                                                                          |
+| **ES-DE**            | where a library sync puts your library — Steam shortcuts, ES-DE or both — and whether ES-DE can reach Tender: its event scripts, its last call, the media types RomM leaves out |
+| **Emulator sources** | every emulator setup Tender found — RetroDECK, EmuDeck, a RetroArch of its own — as a numbered card with its health, **Use this source**, and arrows to move it up or down      |
+| **Tender folder**    | where Tender keeps its own files: the current place, the internal storage, each writable drive with its free space, and **Another folder…**                                     |
+| **Updates**          | the version you have and the release the last successful check found, an update that was rolled back or refused, the daily update check, and **Check now**                      |
+| **Interface**        | whether Tender's Quick Access entry sits above or below Decky Loader's                                                                                                          |
+| **Advanced**         | log level                                                                                                                                                                       |
 
 If you used an earlier version, everything is still here — the eight blocks the panel used to stack are grouped into
-five of the nine sections; **Emulator sources**, **Tender folder**, **Updates** and **Interface** are new. Registered
-Devices is now inside **Save Sync**, the SteamGridDB key is inside **Connections**, and the section that used to be
-called **Library** is now **Steam Library**: the Library _page_ is about what gets synced out of RomM, this section is
-about how it looks once it is in Steam.
+five of the ten sections; **ES-DE**, **Emulator sources**, **Tender folder**, **Updates** and **Interface** are new.
+Registered Devices is now inside **Save Sync**, the SteamGridDB key is inside **Connections**, and the section that used
+to be called **Library** is now **Steam Library**: the Library _page_ is about what gets synced out of RomM, this
+section is about how it looks once it is in Steam.
 
 **Signing in to RetroAchievements is not here yet.** When it arrives it will live under Connections, with the other
 accounts.
@@ -396,6 +397,15 @@ Tender cannot write to, and a place you choose while Tender cannot read the emul
 folders; the internal storage is never checked. Choosing a place switches where Tender keeps its files from then on;
 what lies in the old folder stays there. [Where your data lives](where-your-data-lives.md#tenders-folder) has the rest,
 including what Main says when the folder cannot be reached.
+
+## ES-DE
+
+**Settings › ES-DE** holds **Library surface**, which decides where a library sync puts your RomM library: **Steam
+shortcuts** (the default), **ES-DE** — RetroDECK's ES-DE, with no Steam shortcuts — or **Both**. Below it the section
+shows whether Tender's event scripts are in ES-DE's scripts folder, when ES-DE last called Tender, which media types
+your RomM does not collect, how to turn ES-DE's scripts on, and a note about saves and emulators. The surface cannot be
+changed while a library sync is running; the section says so and the setting goes back. What each choice does, and how
+to set ES-DE up for it, is [ES-DE Mode](es-de-mode.md).
 
 ## Tender's place in the Quick Access Menu
 

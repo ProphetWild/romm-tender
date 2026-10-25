@@ -269,8 +269,11 @@ new source that warrants a pure-parse split should follow the [parser layout tem
 Every folder Tender uses in RetroDECK is the resolver's answer, asked through RetroDECK's handle in one reading of the
 emulator sources (`adapters/retrodeck_folders.py`, behind the `RetroDeckFolders` Protocol): a system's ROM folder is
 `rom_location(system).dir`, and the ROM root (ES-DE's `ROMDirectory`), the home, the BIOS folder and the saves root are
-the handle's `roots()`. Tender reads no RetroDECK file of its own, builds no folder from a root, and has no fallback
-folder: where the resolver names none, nothing that depends on it runs and the answer says why. The ROM root, BIOS
+the handle's `roots()`. Tender reads no RetroDECK file of its own, builds no folder from a root but ES-DE's own, and has
+no fallback folder: where the resolver names none, nothing that depends on it runs and the answer says why. ES-DE's
+gamelists, scripts and downloaded media lie below RetroDECK's home, which the resolver answers, and are none of its
+answers, so `RetroDeckFolders.esde_folders` joins them onto the home (`domain/esde_folders.py`) where that root was
+read, refused as a download is otherwise ([ES-DE Library Mode](es-de-library.md#es-des-folders)). The ROM root, BIOS
 folder and saves root are whole-source roots, which not every source has; they are used only as RetroDECK's, and only by
 what still lies in RetroDECK's folders — whether the removed-game cleanup may start, the bound of a BIOS file an older
 version downloaded there, which places a BIOS link may take, the cleanup's save backups, the start-up removal of

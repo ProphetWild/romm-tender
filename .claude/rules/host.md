@@ -25,10 +25,17 @@ sentence about their game where a programming error stands.
 
 ## 2. An address with a token in it never reaches the log file
 
-The token lives in memory for one process and travels as part of an address, never as a header. Redaction is
-`RedactingFormatter`, set as the **file** handler's own formatter: it rewrites the string that handler renders and
-touches nothing else. The one line that prints the whole load address is deliberate and goes to stderr — the terminal
-for a hand start, the journal for a service — and the stderr handler keeps a plain formatter so that line arrives whole.
+The process holds two tokens, both minted in `main.run()` at every start and both living only in its memory. The
+**admission token** opens the files and the upgrade, and travels as part of an address, never as a header. The **hook
+token** opens only `/hooks/` and is the one that travels as a header (`X-Tender-Hook-Token`): ES-DE's scripts send the
+line `host.hooks.HookFiles` writes into `<data>/esde-hooks/header` (0600, in a 0700 folder) with `curl -H @file`, so it
+is in no request line and on no command line. That makes a request head that cannot be parsed the place it would leak:
+its refusal names the offending line's **length**, never its text — quoting it put the hook token on stderr, which
+reaches the journal, where the panel's update view hides only the admission token's spellings. Redaction is
+`RedactingFormatter`, handed **every** token, set as the **file** handler's own formatter: it rewrites the string that
+handler renders and touches nothing else. The one line that prints the whole load address is deliberate and goes to
+stderr — the terminal for a hand start, the journal for a service — and the stderr handler keeps a plain formatter so
+that line arrives whole.
 
 **Do not make this a `logging.Filter`, which is what it was.** A filter sees the record every handler shares, so
 redacting there rewrote the message for stderr too, and whether it did depended on the order the handlers were added —
@@ -39,12 +46,19 @@ per handler by construction; assert on each handler's output.
 Nothing may ever add a handler on **stdout**: this process reads the vendored resolver's core-probe child on stdout as
 JSON.
 
-## 3. Two entry points, one order: Host, then Origin, then Token
+## 3. Three entry points, one order: Host, then Origin, then Token
 
-The static route and the WebSocket upgrade each call `check_access`, and it runs the three in that order. Host first so
-a rebinding attempt is logged as one instead of as a bad credential; Origin second so the asking origin is on record
-before the credential decides anything; Token last because it is the only one that authorises. A third entry point runs
-the same function or it is not an entry point.
+The static route, the WebSocket upgrade and ES-DE's hook route (`GET /hooks/esde/<name>`, `host/hooks.py`) each call
+`check_access`, and it runs the three in that order. Host first so a rebinding attempt is logged as one instead of as a
+bad credential; Origin second so the asking origin is on record before the credential decides anything; Token last
+because it is the only one that authorises. A fourth entry point runs the same function or it is not an entry point.
+
+**Which token decides follows from the path alone.** `is_hook_path` is asked by the admission and by the routing alike,
+of the path exactly as the request line spelled it, so the two cannot read one path two ways: a path under `/hooks/` is
+judged by the hook token and nothing else, every other path by the admission token and nothing else. Neither admits the
+other's routes — pinned both ways in `tests/host/test_access.py` (`TestTheHookToken`, and on the wire
+`test_the_hook_token_admits_neither_the_files_nor_the_upgrade` and `test_the_admission_token_admits_no_hook`). Both are
+compared as bytes, since `secrets.compare_digest` raises on a `str` outside ASCII and an offer is whatever was sent.
 
 **One refusal is answered with more than a status, and it is the only one.** An upgrade that passes Host and Origin and
 offers a token that is not this process's is completed and closed at once with 4001 or 4002 (`host.protocol`): a browser
@@ -53,9 +67,10 @@ hides why a handshake failed, so a 401 cannot tell a stranded panel that a backe
 first time it still gets the plain 401, because which code is true is not known yet (`host.protocol.ReloadOutlook`).
 Nothing is attached to that socket — no `HostConnection`, no dispatcher, no event sink — and `server.connected` stays as
 it was; the code adds one bit, whether this backend will reload Steam's interface. A refusal answered with a code is
-logged once per panel session rather than per knock; the start-up 401, no token at all, the static route, and the Host
-and Origin refusals keep their plain status and are logged every time: Host and Origin so they are on record. Widening
-the exception — another refusal answered with a body, a code, or a header — is a decision, not a refactor.
+logged once per panel session rather than per knock; the start-up 401, no token at all, the static route, the hook
+route, and the Host and Origin refusals keep their plain status and are logged every time: Host and Origin so they are
+on record. A hook refusal is never flagged `wrong_token`, so the close codes stay the upgrade's alone. Widening the
+exception — another refusal answered with a body, a code, or a header — is a decision, not a refactor.
 
 `AccessPolicy` is built from the port **actually bound**, never from the port that was asked for. After a fallback a
 policy built from the wish refuses every request there is.

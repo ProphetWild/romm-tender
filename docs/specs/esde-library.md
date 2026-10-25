@@ -158,7 +158,8 @@ must list before RomM stores that media at all.
   last extension; a directory ES-DE interprets as a file keeps its whole name (`Final Fantasy VII.m3u/` →
   `Final Fantasy VII.m3u.png`). The entry is the stand-in, or the install's top-level file or folder.
 - **The folders are built from RetroDECK's home** (D13): `<rd_home>/ES-DE/{downloaded_media,gamelists,scripts}`, only
-  while the resolver's installation root is `read`, never `assumed`, in one adapter (`adapters/esde_folders.py`).
+  while the resolver's installation root is `read`, never `assumed`, in one adapter
+  (`RetroDeckFoldersAdapter.esde_folders`, joined in `domain/esde_folders.py`).
 - **Ownership** (D11): the files live in Tender's cache root (`<cache>/esde/media/<rom_id>/<folder>.<ext>`), and the
   media tree gets an absolute symlink to each, Tender's exactly when its target lies there. ES-DE follows a symlinked
   media file (`std::filesystem::exists`, and the texture cache resolves links; source).
@@ -203,8 +204,8 @@ path, but not `/run`, where Tender's port file lives.
   host parses no body). It is admitted by the same checks in the same order as the other two (Host, then Origin, then
   token), against a **hook token** that admits only `/hooks/` — never `/ws` or the panel's files — and the panel's token
   admits no hook. The hook token is minted at every backend start (D10) and written with the port to
-  `<data>/esde-hooks.env` (mode 0600), the file the scripts read on every call; it is redacted from the log like the
-  admission token.
+  `<data>/esde-hooks/` (mode 0700) as two files, `port` and `header` (each 0600; `header` holds the one header line
+  `curl -H @file` sends), which the scripts read on every call; it is redacted from the log like the admission token.
 - **Events.** `startup` (pending gamelist writes, bounded), `game-start` → `prepare`, `game-end` → `finish`,
   `game-select` → `select`. ES-DE passes `game-start` and `game-end` the ROM path with shell backslash escapes still in
   it, and `game-select` the plain path; it passes a link's own path, never its target, and for a directory interpreted
@@ -212,9 +213,9 @@ path, but not `/run`, where Tender's port file lives.
 - **Resolving the game.** A path is Tender's when it, or the directory it is inside, is a stand-in (the target names the
   game) or is an install's recorded file or folder. Anything else is refused and the script does nothing.
 - **Scripts.** Small POSIX `sh` files Tender writes into `<rd_home>/ES-DE/scripts/<event>/tender-romm.sh` while the
-  surface is `esde` or `both`, and removes when it is `steam`. They read `esde-hooks.env`, call the route with `curl`
-  (in RetroDECK's runtime), and **always exit 0**; `game-end` backgrounds its call, so leaving a game never waits on the
-  upload. ES-DE ignores a script's exit code and cannot cancel a launch from one.
+  surface is `esde` or `both`, and removes when it is `steam`. They read `esde-hooks/port` and `esde-hooks/header`, call
+  the route with `curl` (in RetroDECK's runtime), and **always exit 0**; `game-end` backgrounds its call, so leaving a
+  game never waits on the upload. ES-DE ignores a script's exit code and cannot cancel a launch from one.
 - **Turning scripts on** is a user step in ES-DE (Main menu → Other settings → "Enable custom event scripts" and "Enable
   browsing custom events"); the ES-DE settings section says so and shows when ES-DE last called.
 
@@ -240,8 +241,8 @@ Each is "(device)": only a run on the Deck in Game Mode can show it. Source read
 what the device shows in Decisions.
 
 - [ ] RomM on the Mac mini is ≥ 5.3.0 and reachable from the Deck by its Tailscale MagicDNS name on the LAN and off it.
-- [ ] From inside the RetroDECK sandbox `curl` reaches `127.0.0.1:<tender port>` and reads `<data>/esde-hooks.env`
-      (expected: yes, shared network and `--filesystem=host`).
+- [ ] From inside the RetroDECK sandbox `curl` reaches `127.0.0.1:<tender port>` and reads `<data>/esde-hooks/port` and
+      `<data>/esde-hooks/header` (expected: yes, shared network and `--filesystem=host`).
 - [ ] ES-DE holds a launch until a `game-start` script exits, with no timeout of its own (expected: yes).
 - [ ] The arguments each event passes (expected: escaped link path, name, system, full name for `game-start`/`game-end`;
       plain path for `game-select`).
@@ -296,8 +297,8 @@ at hand, each to be confirmed or struck after the device pass: D5–D16.
 - **D8** — Download progress is shown by Steam toasts only; ES-DE offers a script no way to draw on its screen.
 - **D9** — `Both` is allowed: a game has a shortcut and an ES-DE entry, and ADR-0042's warning about different emulators
   writing saves to different places stands.
-- **D10** — The hook token is minted at every backend start and written, with the port, to a 0600 file in the data root;
-  the scripts read it on every call.
+- **D10** — The hook token is minted at every backend start and written, with the port, to 0600 files in the data root
+  (`<data>/esde-hooks/port` and `<data>/esde-hooks/header`); the scripts read them on every call.
 - **D11** — Media files live in the cache root and reach ES-DE as symlinks Tender recognises by their target.
 - **D12** — Miximages are RomM's (ScreenScraper's), where RomM has one; otherwise ES-DE's own offline generator can
   build them from what Tender linked.
@@ -341,10 +342,12 @@ Each becomes a test seen failing first, or is marked (device).
 
 ## Order of work
 
-1. The setting, the sync's ES-DE branch (commit without emitting, no Steam artwork), and the shortcut removal offer.
-2. ES-DE folders, stand-ins, and their seams in downloads, uninstall, adoption and the game page.
-3. Media: the mapping, the fetch, the links; then on-demand videos and manuals.
-4. The merge-safe gamelist writer.
-5. The hook token, the hook routes, the hook service (`prepare`, `finish`, `select`, `startup`) and the scripts.
-6. The ES-DE settings section and the toasts.
-7. Docs, the ADR, the suites; then the device pass.
+1. [x] The setting, the sync's ES-DE branch (commit without emitting, no Steam artwork), and the shortcut removal offer.
+2. [x] ES-DE folders, stand-ins, and their seams in downloads, uninstall, adoption and the game page.
+3. [x] Media: the mapping, the fetch, the links; then on-demand videos and manuals.
+4. [x] The merge-safe gamelist writer.
+5. [x] The hook token, the hook routes, the hook service (`prepare`, `finish`, `select`, `startup`) and the scripts.
+6. [x] The ES-DE settings section and the toasts.
+7. [x] Docs, the ADR, the suites ([ES-DE Mode](../user-guide/es-de-mode.md),
+       [ES-DE Library Mode](../architecture/es-de-library.md), [ADR-0044](../adr/0044-es-de-library-mode.md)).
+8. [ ] The device pass (Phase 0 and the "(device)" criteria above).

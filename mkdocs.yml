@@ -97,6 +97,7 @@ nav:
       - Save File Extensions: user-guide/save-file-extensions.md
       - Save Sync Support Matrix: user-guide/save-sync-support-matrix.md
       - RetroDECK Path Migration: user-guide/retrodeck-path-migration.md
+      - ES-DE Mode: user-guide/es-de-mode.md
       - Where Your Data Lives: user-guide/where-your-data-lives.md
       - Troubleshooting: user-guide/troubleshooting.md
   - Architecture:
@@ -108,6 +109,7 @@ nav:
       - Config Source Parsers: architecture/config-source-parsers.md
       - Core &amp; Emulator Selection: architecture/core-emulator-selection.md
       - Steam Non-Steam Shortcuts: architecture/steam-non-steam-shortcuts.md
+      - ES-DE Library Mode: architecture/es-de-library.md
       - QAM Panel: architecture/qam-panel.md
       - Frontend Bundles: architecture/frontend-bundles.md
       - Loading the Panel: architecture/loading-the-panel.md

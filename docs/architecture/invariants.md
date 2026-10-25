@@ -119,6 +119,29 @@ Format: **invariant** — tier — enforced by.
   under another name, encoded twice, split across lines, or holding a character outside that alphabet. **Prompt-only**:
   a new reader of journal text answers through `output_section`, `installer_section` or `hide_token`, never with the raw
   `JournalEntry.message` ([UpdateOutputService notes](backend-architecture.md#updateoutputservice-notes))
+- **The hook token admits only paths under `/hooks/` and the admission token never one: which token judges a request is
+  `host/access.py`'s `is_hook_path` of the path as the request line spells it, asked by the admission and the routing
+  alike; a hook request passes Host, then Origin, then the hook token in the `X-Tender-Hook-Token` header, and its
+  refusal is never flagged `wrong_token`; the hook token is kept out of the log file with the admission token, and no
+  refusal quotes a request head's text** — test + prompt-only — ES-DE runs in RetroDECK's flatpak, which shares the home
+  folder and the network but not `/run`, so its event scripts reach the backend over a third entry point and find it
+  through two files under the data root, `<data>/esde-hooks/port` and `header` (`host/hooks.py`). Those files are
+  readable by anything running as the user, so the token they hold must open nothing but what ES-DE needs: a hook token
+  that admitted `/ws` would let any local process drive every endpoint, and an admission token that admitted a hook
+  would make the panel's token a second key to it. Deciding by the path alone, in one function both readers ask, is what
+  keeps the admission and the routing from reading one path two ways. A hook refusal is never `wrong_token` because that
+  flag is the stranded-panel close codes' trigger (`.claude/rules/host.md`, rule 3), which belong to the upgrade. The
+  header is the token's one way in, so a request head that cannot be parsed is where it would leak: the refusal names
+  the offending line's length, never its text, since stderr reaches the journal and the panel's update view hides only
+  the admission token's spellings. `tests/host/test_access.py` pins both directions (`TestTheHookToken`, `TestTheOrder`,
+  and `TestTheChecksOnTheWire`'s `test_the_hook_token_admits_neither_the_files_nor_the_upgrade`,
+  `test_the_admission_token_admits_no_hook` and `test_neither_token_is_answered_by_a_hook`);
+  `tests/host/test_logging_setup.py::TestHookTokenRedaction` the file handler;
+  `tests/lib/test_http_messages.py::TestParseRequestHead::test_a_malformed_header_line_is_refused_without_its_text` the
+  refusal's text; `tests/host/test_runtime.py::TestTheHookFiles` the files' contents, modes and lifetime. **Unseen by
+  them**: a log line elsewhere that prints a request's headers, and the journal. **Prompt-only**: a route the hook token
+  should open lies under `/hooks/`, and nothing outside `host/` and `main.py` reads the hook token
+  ([ES-DE Library Mode](es-de-library.md#the-hook-bridge))
 - **The pre-install check (`backend/check.py`) never builds under a live root: its code root is the tree being checked,
   every other root and the runtime directory are absent or empty when it starts, neither copy lands where it is copied
   from, and the live database is read without a file created or removed beside it, and with no write to one but a
@@ -330,19 +353,21 @@ Format: **invariant** — tier — enforced by.
   an answer past the reading it came through (a panel call's per question, a run's for the run)
 - **Every RetroDECK folder Tender downloads into, removes from, bounds a removal by or reads for the move code is the
   resolver's answer, asked through `adapters/retrodeck_folders.py`; no module reads RetroDECK's settings or builds such
-  a folder from a root — except the move code, which joins `bios` and `saves` onto each old home a pending move left —
-  and a root the resolver only assumed (`assumed` in its roots answer, `domain/source_roots.py`) or gives no path for is
-  used for nothing, each root judged by its own provenance, also under a `marker-*` finding, and a system's folder going
-  with its ROM root; where detecting the sources or the roots question raised, none of those folders is used — except
-  that a download while RetroDECK is switched off says so, and a raise on a system's own ROM folder refuses only the
-  presses that need that folder; a removal of a game's files is bounded by its system's own ROM folder, never by the ROM
-  root** — test + prompt-only — `tests/domain/test_source_roots.py` (the rule) and
-  `tests/adapters/test_retrodeck_folders.py` (the real resolver over tmp homes: every folder its answer,
-  `TestEachRootIsJudgedByItsProvenance` over a settings file without `paths`, one key unset, a `version` alone
-  unreadable, ES-DE's own default ROM folder and an assumed home that is missing, each `marker-*` finding refusing the
-  BIOS, saves and move questions and `not-set-up` every question, `TestWhereAQuestionToTheResolverRaises` and
-  `TestWhereDetectingTheSourcesRaises` refusing every question for a raise on the detection or the roots and only its
-  own for a system's folder, and `TestNoModuleReadsRetroDecksSettings` over the code's string constants) and
+  a folder from a root — except the move code, which joins `bios` and `saves` onto each old home a pending move left,
+  and ES-DE's three folders (`gamelists`, `scripts`, `downloaded_media`), which `RetroDeckFolders.esde_folders` joins
+  onto RetroDECK's home where that root was read, since the resolver answers none of them — and a root the resolver only
+  assumed (`assumed` in its roots answer, `domain/source_roots.py`) or gives no path for is used for nothing, each root
+  judged by its own provenance, also under a `marker-*` finding, and a system's folder going with its ROM root; where
+  detecting the sources or the roots question raised, none of those folders is used — except that a download while
+  RetroDECK is switched off says so, and a raise on a system's own ROM folder refuses only the presses that need that
+  folder; a removal of a game's files is bounded by its system's own ROM folder, never by the ROM root** — test +
+  prompt-only — `tests/domain/test_source_roots.py` (the rule) and `tests/adapters/test_retrodeck_folders.py` (the real
+  resolver over tmp homes: every folder its answer, `TestEachRootIsJudgedByItsProvenance` over a settings file without
+  `paths`, one key unset, a `version` alone unreadable, ES-DE's own default ROM folder and an assumed home that is
+  missing, each `marker-*` finding refusing the BIOS, saves and move questions and `not-set-up` every question,
+  `TestWhereAQuestionToTheResolverRaises` and `TestWhereDetectingTheSourcesRaises` refusing every question for a raise
+  on the detection or the roots and only its own for a system's folder, `TestEsDesFoldersAreJoinedOntoRetroDecksHome`
+  for ES-DE's three, and `TestNoModuleReadsRetroDecksSettings` over the code's string constants) and
   `tests/contract/test_retrodeck_folders.py` (under each finding, with a key unset, and where the detection or the roots
   could not be asked, no press downloads, deletes, cleans up or migrates in a folder that was not read, the cleanup is
   refused at its start for an assumed saves root, and a `version` alone unreadable refuses no press); the system-folder
@@ -357,14 +382,62 @@ Format: **invariant** — tier — enforced by.
   `~/retrodeck` where they do not — whatever finding stands beside it (a `retrodeck.json` without `paths` or with one
   key unset carries none), so using it would be that guess again, and the missing-root findings the resolver states for
   it name a folder nobody configured ([#2294](https://github.com/danielcopper/romm-tender/issues/2294)). The rules each
-  question answers by are on [Config source parsers](config-source-parsers.md#retrodecks-folders-retrodeckjson). A
-  save's folder and a firmware file's place take the other route, the save and firmware answers
-  (`adapters/atlas_saves.py`, `adapters/atlas_firmware.py`), and this entry does not cover them: a save's place comes
-  from the emulator's own settings rather than from `retrodeck.json`, so under the three `marker-*` findings a save
-  still syncs where the emulator keeps it, and a place those settings did not name is the save-answer entry's to refuse.
-  Unseen by the tests: a folder joined onto a root under another name, and a caller that puts the question to
-  RetroDECK's handle itself. Prompt-only: a new caller that downloads into, removes from or bounds a removal by a
-  RetroDECK folder asks `RetroDeckFolders` and raises the refusal it answers with
+  question answers by are on [Config source parsers](config-source-parsers.md#retrodecks-folders-retrodeckjson). ES-DE's
+  three folders are the one join onto a root besides the move code's: the vendored resolver answers RetroDECK's home and
+  none of ES-DE's gamelists, scripts or downloaded media, and `_vendor/` is never edited, so they are joined onto the
+  home only where that root was read and refused wherever a download would be; a `downloaded_media` moved with
+  RetroDECK's Configurator is not followed ([ES-DE Library Mode](es-de-library.md#es-des-folders)). A save's folder and
+  a firmware file's place take the other route, the save and firmware answers (`adapters/atlas_saves.py`,
+  `adapters/atlas_firmware.py`), and this entry does not cover them: a save's place comes from the emulator's own
+  settings rather than from `retrodeck.json`, so under the three `marker-*` findings a save still syncs where the
+  emulator keeps it, and a place those settings did not name is the save-answer entry's to refuse. Unseen by the tests:
+  a folder joined onto a root under another name, and a caller that puts the question to RetroDECK's handle itself.
+  Prompt-only: a new caller that downloads into, removes from or bounds a removal by a RetroDECK folder asks
+  `RetroDeckFolders` and raises the refusal it answers with
+- **In ES-DE's folders and RetroDECK's ROM folders Tender replaces or removes only what a no-follow re-read right before
+  shows is its own — a stand-in, a link into `<cache>/esde/stand-ins/` naming that game; a media link, one into
+  `<cache>/esde/`; an event script, a regular file whose second line is Tender's marker — and never overwrites, renames
+  or removes anything else; a media slot any other file holds, under any extension ES-DE reads, gets no link of
+  Tender's** — test + prompt-only — ES-DE's folders are written by ES-DE, its scraper and the user as well, and a ROM
+  folder holds the user's games: what Tender puts there must be told from everything else by what it is, not by a record
+  that can be lost or a name that can be taken. A link is recognised by its target, a script by its marker, each read
+  without following a link (`lstat`, `readlink`, `O_NOFOLLOW`) right before it is changed; a free name takes an
+  exclusive `os.symlink`, which fails rather than replace something that appeared there, and only Tender's own link is
+  replaced through a temporary renamed over it. ES-DE takes the first image extension that exists, so a user's
+  `covers/<stem>.jpg` beside a link of Tender's at `.png` would be shadowed: a slot any other file holds gets no link at
+  all, and Tender's own links there go. Without the rule a sync would overwrite scraped media, a stand-in could replace
+  a game the user placed, and leaving ES-DE could remove the user's files. `tests/adapters/test_esde_stand_ins.py`
+  (`TestNeverOverAnythingElse`, `TestRemoving`), `tests/adapters/test_esde_media_files.py` (`TestLinking`,
+  `TestUnlinking`), `tests/adapters/test_esde_hook_scripts.py` (`TestInstalling`, `TestRemoving`), and over the real
+  wiring
+  `tests/contract/test_esde_media.py::test_a_cover_of_the_user_s_is_left_alone_and_no_cover_of_tender_s_is_linked_beside_it`,
+  `::test_switching_the_surface_to_steam_removes_every_link_of_tender_s_and_nothing_else` and
+  `tests/contract/test_esde_stand_ins.py::test_switching_the_surface_to_steam_removes_every_stand_in_and_nothing_else`.
+  **Unseen by them**: a file put at the name between the re-read and the rename or unlink that follows it.
+  **Prompt-only**: every file operation in ES-DE's folders, and every stand-in in a ROM folder, goes through
+  `EsdeStandInStore`, `EsdeMediaStore`, `EsdeHookScriptStore` or `EsdeGamelistStore`
+  ([ES-DE Library Mode](es-de-library.md))
+- **A gamelist is written only while no ES-DE process runs — `EsdeRunningFn`, which answers that one runs where the
+  process table cannot be read — or from ES-DE's `startup` hook, and a write changes only Tender's seven fields in
+  Tender's own entries: every other byte stays, and a field that is not empty and holds anything but what Tender last
+  wrote there is kept** — test + prompt-only — ES-DE rewrites a gamelist while it runs, not only on exit: under its
+  default SaveGamelistsMode "always" every save point (a launch's playcount among them, `FileData::launchGame`) runs
+  `updateGamelist`, which re-reads the file and puts back each entry it changed from what it read at its start, so a
+  write of Tender's made meanwhile is lost for those entries; `startup` fires before ES-DE reads any gamelist and holds
+  it until its scripts finish. The file is also ES-DE's, its scraper's and the user's, so the merge is a splice over its
+  text that leaves every other byte as it was, and a field whose value differs from what Tender last wrote
+  (`<data>/esde/gamelists.json`) was edited by somebody else and is theirs from then on. A process table that cannot be
+  read answers "runs", so the fallback is a write deferred, never one into a file ES-DE holds.
+  `tests/domain/test_esde_gamelist.py` (`TestEverythingTenderDoesNotOwn`, `TestTendersFieldsInItsEntry`) with its
+  property tier `tests/domain/test_esde_gamelist_property.py` (untouched bytes, output that parses, ES-DE's reading of
+  every field, a second merge that changes nothing), `tests/services/esde/test_gamelists.py`
+  (`TestARunsEnd::test_with_es_de_running_nothing_is_written_and_everything_waits`, `TestEsdesStart`),
+  `tests/adapters/test_esde_process.py::TestAProcessTableThatCannotBeRead` and `tests/contract/test_esde_gamelists.py`
+  (`test_the_user_s_own_entry_and_a_field_the_user_edited_stay_byte_for_byte`,
+  `test_while_es_de_runs_nothing_is_written_until_its_start_asks`). **Unseen by them**: an ES-DE that starts between the
+  check and the write, and one whose process is named other than `es-de`. **Prompt-only**: no module but
+  `EsdeGamelistService` writes a gamelist, and `write_pending` is called only from the `startup` hook
+  ([ES-DE Library Mode](es-de-library.md#gamelists))
 - **A module declared read-only calls no repository write — `services/library/local_library_reader.py` to start** —
   check — `scripts/check_read_only_module.py` (AST over the declared file's own calls, matching the two-attribute
   `<...>.<repo>.<method>` shape against the sixteen repositories the UoW exposes). Read or write is decided **by the

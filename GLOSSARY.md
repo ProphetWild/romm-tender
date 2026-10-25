@@ -121,9 +121,13 @@ rungs are for a start by hand.
   of the database and settings — `update-backup/`, which every update replaces, and `rollback-backup/`, which a rollback
   by hand replaces, each of which can have a `.new` or `.prev` sibling beside it — and, on a machine updated from an
   install that kept covers there, a `covers/` or `artwork/` holding the files the move into the cache root did not take
-  — and, where a start found the database under both names, the `romm_sync.db` it left as it was. This list is the one
-  complete inventory of that root; the user guide names only what a user meets there.
-- **cache root** — what can: the cover and artwork caches.
+  — and, where a start found the database under both names, the `romm_sync.db` it left as it was — and `esde/`, the
+  three records ES-DE library mode keeps (`index.json` for the **stand-ins**, `media.json`, `gamelists.json`), and
+  `esde-hooks/`, the two **hook token** files (`port`, `header`) the host writes at every start once its port is bound
+  and removes at shutdown. This list is the one complete inventory of that root; the user guide names only what a user
+  meets there.
+- **cache root** — what can: the cover and artwork caches, and `esde/`: the stand-ins' empty stubs (`stand-ins/`) and
+  the media copies ES-DE's links point at (`media/`, `on-demand/`).
 - **state root** — the log file.
 - **runtime root** — the port file, in a directory the session clears at logout.
 - **code root** — where the program itself sits; the launcher it ships is copied out of here.
@@ -565,6 +569,40 @@ folder (that is an emulator source's), collection (a RomM concept).
 An absolute symlink Tender places in an emulator source's ROM folder for a system, pointing at a game in the **library**
 — at its file, or at its whole folder for a multi-file game. It is Tender's own exactly when it points at a library file
 Tender records; only such a link is ever removed by Tender. One switch per frontend decides whether it gets links.
+
+### Library surface
+
+Where a library sync puts the RomM library: **`steam`** (Steam shortcuts, the default), **`esde`** (RetroDECK's ES-DE,
+with no Steam shortcuts) or **`both`** — the `library_surface` setting, `domain/library_surface.py`, which also answers
+whether a surface creates Steam shortcuts and whether it writes ES-DE. A sync reads it once, when an apply run starts.
+Detail: [ES-DE Library Mode](docs/architecture/es-de-library.md). _Avoid_: **surface** alone, which names one of the
+panel's two UIs (see **Surface (bigpicture / desktop)**); **mode** in code (the user guide's "ES-DE mode" is the surface
+`esde` or `both`).
+
+### Stand-in
+
+What Tender places in RetroDECK's ROM folder for a game that is not downloaded, so that ES-DE lists it: an absolute
+symlink at exactly the path the game's download will take, pointing at an empty stub below
+`<cache>/esde/stand-ins/<rom_id>/`. It is Tender's exactly when its target lies there, and the target's `<rom_id>` names
+the game. A stand-in is never an install: the download clears it, uninstall puts it back, and no save question, adoption
+or launch of Tender's sees one (`domain/esde_stand_in.py`, `services/esde/stand_ins.py`). _Avoid_: **placeholder**,
+which names the empty launch command an uninstalled shortcut carries; **frontend link**, which points at a file in
+Tender's **library** that exists.
+
+### ES-DE pass
+
+The part of a library sync, under a **library surface** that writes ES-DE, that places each unit's **stand-ins** and
+queues its media and gamelist fields, and at the run's end removes what the run no longer keeps and writes the gamelists
+(`EsdeLibraryPass`, `services/esde/library_pass.py`). It is also what the settings tell when a surface is stored.
+_Avoid_: **ES-DE sync**, which reads as a second sync beside the library sync.
+
+### Hook token / admission token
+
+The **admission token** opens the panel's files and its WebSocket; it travels in an address, never in a header, and
+reaches only the panel the backend loaded. The **hook token** opens only ES-DE's hook routes under `/hooks/`; ES-DE's
+event scripts send it in the `X-Tender-Hook-Token` header, read from `<data>/esde-hooks/header`. Each process mints both
+at its start, neither admits the other's routes, and both are kept out of the log file (`.claude/rules/host.md`, rules 2
+and 3). _Avoid_: **the token** alone where both are in play.
 
 ### Origin: downloaded / recognised
 

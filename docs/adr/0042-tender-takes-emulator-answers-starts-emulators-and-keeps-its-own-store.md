@@ -1,8 +1,9 @@
 ---
 status: accepted
 decided: 2026-10-05
-updated: 2026-10-05
+updated: 2026-10-25
 amends: [0011, 0028, 0030, 0041]
+amended-by: [0044]
 ---
 
 # Tender takes emulator answers from emu-atlas, starts emulators itself, and keeps games and BIOS in its own store

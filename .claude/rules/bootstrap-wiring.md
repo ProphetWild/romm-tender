@@ -18,8 +18,11 @@ in `bootstrap()` and passed through `CallbackBundle`.
 
 **Process boundaries — `main.py` vs `bootstrap/`**: `[ours]` `main.py` owns the process entry point (`run()` and
 `build_backend()`) and `Endpoints` (one public method marked `@route` per endpoint), which takes the `Application` and
-the host's status record in its constructor and holds nothing else. `bootstrap/` owns adapter instantiation, service
-wiring and the `Application`. The split is binding — no endpoints in `bootstrap/`, no service wiring in `main.py`.
+the host's status record in its constructor and holds nothing else. Beside `Endpoints`, not on it, sits `EsdeHooks`,
+what ES-DE's hook route can call (one public method per hook, mapped by `esde_hook_routes` and wrapped in the same
+refusal translation): every public method on `Endpoints` is reachable over the WebSocket, and a hook must be reachable
+only behind the hook token (`.claude/rules/host.md`, rule 3). `bootstrap/` owns adapter instantiation, service wiring
+and the `Application`. The split is binding — no endpoints in `bootstrap/`, no service wiring in `main.py`.
 
 `check.py` beside `main.py` is the second entry point, the pre-install check's (`check()`): it builds the `Application`
 on copies of the live data and runs nothing of it — no start-up repair, no host. It is a file of its own rather than a

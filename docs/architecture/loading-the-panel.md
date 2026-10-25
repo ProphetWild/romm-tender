@@ -361,6 +361,12 @@ What it is kept out of is everything that outlives that: the marker left on the 
 instance instead — a value that authorises nothing), the card on screen, and what comes back to the backend — any error
 text has the token replaced with `<token>` before the injector ever logs it.
 
+This is the **admission token**, which opens the panel's files and the upgrade and nothing else. The process mints a
+second one beside it, the **hook token**, which opens only ES-DE's hook routes under `/hooks/` and never `/ws` or a
+file, while the admission token opens no hook. It is never in an address and never reaches Steam: ES-DE's scripts send
+it as a header, read from a file under the data root. What it admits and where it is kept is
+[ES-DE Library Mode](es-de-library.md#the-hook-token-and-its-files).
+
 ## Running it
 
 `mise run dev` builds the panel, **restarts the running Steam**, and runs the backend, which serves `dist/` and loads

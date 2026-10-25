@@ -13,6 +13,10 @@ games appear in the Steam Library with cover art, metadata, and organized into c
 5. Metadata (description, developer, genres, release date) is cached and displayed in Tender's custom game detail panel
 6. Steam collections are created per platform (e.g. "RomM: Game Boy Advance (steamdeck)")
 
+With **Settings › ES-DE › Library surface** set to **ES-DE**, a sync lists the library in RetroDECK's ES-DE instead,
+creates no Steam shortcuts and no Steam artwork, and the Sync page starts it without a preview; with **Both** it does
+both. [ES-DE Mode](es-de-mode.md) has the rest.
+
 ## Starting a Sync
 
 1. Open the QAM and find **Tender**
