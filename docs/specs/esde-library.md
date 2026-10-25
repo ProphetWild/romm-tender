@@ -8,8 +8,9 @@ until each is checked off into `## Decisions`.
 
 Play the full RomM library from ES-DE inside RetroDECK on a Steam Deck, with no Steam shortcuts:
 
-1. Every RomM game in the enabled platforms appears in ES-DE, with RomM's metadata and artwork, whether downloaded or
-   not.
+1. Every RomM game in the enabled platforms appears in ES-DE, whether downloaded or not, with RomM's metadata and every
+   kind of media ES-DE shows that RomM (or SteamGridDB) has for it — 3D box, marquee, screenshot, title screen, physical
+   media and the rest — not only the 2D cover.
 2. Launching a game that is not downloaded downloads it first, then starts it. No trip to the QAM panel.
 3. Saves sync with RomM around every ES-DE launch: pull before start, push after exit.
 4. Tender creates no Steam shortcuts in this mode. The QAM panel stays as the settings, download and BIOS surface.
@@ -38,6 +39,12 @@ Read these before writing code; each is the current owner of its area.
   content path"; do not write a reader of our own (ADR-0042 decision 1).
 - The backend hosts itself on a loopback port with token and session admission (`backend/host/access.py`,
   `.claude/rules/host.md`). That port is the bridge ES-DE's hook scripts reach.
+- Artwork today is keyed by ROM, not by shortcut, so this mode can take it as it is. The library sync caches RomM's
+  cover per ROM in the cache root (`{rom_id}.png`, `domain/artwork_paths.py`) by a conditional GET that revalidates by
+  ETag (`RommApiAdapter.download_cover` over `RommHttpAdapter.download_conditional`), falling back to the ROM's
+  `url_cover` on a 404 (`services/artwork/service.py`). The SteamGridDB pipeline (`services/steamgrid/`,
+  `domain/sgdb_artwork.py`) caches a cover, a logo, a hero, a wide grid and an icon per ROM. The only image code Tender
+  carries is the vendored pure-Python `png` (`adapters/icon_image.py`): it cannot decode or convert JPEG or WebP.
 - RomM floor is **5.3.0** (`MIN_ROMM_VERSION`, ADR-0040). Confirm the Mac mini's RomM meets it before anything else.
 
 ## Design
@@ -69,12 +76,118 @@ ES-DE lists only files that exist in a system folder, so every not-downloaded ga
 
 ### 3. ES-DE metadata and media
 
-- **Media**: write RomM's cover (and screenshot/marquee/title where RomM has them) into ES-DE's `downloaded_media` tree
-  for the system, named by the game file's base name. ES-DE ties media to the file name, not the gamelist, so this works
-  for placeholders and downloaded games alike, and survives a retarget.
+Facts below are from ES-DE 3.5.0's `USERGUIDE.md` ("Manually copying game media files", "Game media viewer", "Miximage
+settings"), `FAQ.md`, `THEMES.md` and, where the docs are silent, its source (`es-app/src/FileData.cpp`,
+`MiximageGenerator.cpp`, `scrapers/Scraper.cpp`); from RomM 5.3.0–5.4.1's source (`backend/config/config_manager.py`,
+`backend/handler/filesystem/resources_handler.py`, `backend/endpoints/responses/rom.py`,
+`backend/utils/gamelist_exporter.py`); and from RetroDECK's `config/retrodeck/retrodeck.json` and its ES-DE component
+scripts. Where a fact matters on the device, Phase 0 checks it there.
+
+#### 3a. The media types
+
+ES-DE reads twelve folders under `<MediaDirectory>/<system>/`. Tender fills the eleven RomM can and never touches
+`custom`. A `*_path` in the RomM field column is read from `ss_metadata`, then `gamelist_metadata`, then
+`launchbox_metadata`, the first that is set — the order RomM's own ES-DE exporter takes (`_collect_assets`); the other
+fields sit on the ROM itself. The `scan.media` column is the value RomM's server config must list before RomM stores
+that media at all.
+
+| ES-DE folder    | What it is               | RomM field                                         | `scan.media`                 | Fallback                                | Shown by                                                                             |
+| --------------- | ------------------------ | -------------------------------------------------- | ---------------------------- | --------------------------------------- | ------------------------------------------------------------------------------------ |
+| `covers`        | Front of the box         | `path_cover_large`, else `path_cover_small`        | always stored                | SteamGridDB cover (Tender's pick today) | RetroDECK theme (carousel), every theme's `image` as a last resort, the media viewer |
+| `marquees`      | Wheel / clear logo       | `logo_path`, else `gamelist_metadata.marquee_path` | `logo`                       | SteamGridDB logo                        | RetroDECK theme (grid, textlist, system view), Modern; a miximage input              |
+| `screenshots`   | Gameplay                 | an entry of `merged_screenshots`                   | `screenshot` (on by default) | —                                       | Every theme's `image`; a miximage's one required input                               |
+| `titlescreens`  | Title screen             | `title_screen_path`                                | `title_screen`               | —                                       | RetroDECK theme (grid), the media viewer                                             |
+| `3dboxes`       | 3D box                   | `box3d_path`                                       | `box3d`                      | —                                       | A miximage input; third-party themes                                                 |
+| `backcovers`    | Back of the box          | `box2d_back_path`                                  | `box2d_back`                 | —                                       | The media viewer                                                                     |
+| `physicalmedia` | Cartridge, disc, tape    | `physical_path`                                    | `physical`                   | —                                       | RetroDECK theme (carousel); a miximage input                                         |
+| `fanart`        | Background art           | `fanart_path`                                      | `fanart`                     | SteamGridDB hero                        | The media viewer                                                                     |
+| `miximages`     | A composite of the above | `miximage_path`                                    | `miximage`                   | ES-DE's own generator (see To decide)   | Every theme's `image` first; RetroDECK theme (textlist, grid)                        |
+| `videos`        | Gameplay video           | `path_video`                                       | `video`, `video_normalized`  | —                                       | RetroDECK theme, Modern, Slate, Linear's video variants                              |
+| `manuals`       | Manual, PDF only         | `path_manual`                                      | `manual` (on by default)     | —                                       | The media viewer                                                                     |
+| `custom`        | The user's own image     | never written                                      | —                            | —                                       | The media viewer                                                                     |
+
+- RomM's `ss_metadata.marquee_path` is ScreenScraper's screen marquee, not ES-DE's: ES-DE's marquee is the wheel, which
+  RomM keeps in `logo_path`. RomM's own exporter maps it the same way.
+- A theme's `image` is the first of miximage, screenshot, title screen and cover that exists (`THEMES.md`). So a game
+  with a cover and nothing else still has an image everywhere, and a screenshot or miximage replaces the cover in most
+  layouts.
+- RomM's default `scan.media` is `box2d, screenshot, manual`. Out of the box, then, RomM has covers, screenshots and
+  manuals and nothing else on this table: the other types need the Mac mini's `scan.media` widened, a metadata source
+  that has them (ScreenScraper for most; LaunchBox gives the box faces from RomM 5.4), and an "Update Metadata" rescan
+  (Phase 0).
+- `merged_screenshots` is every source's screenshots merged, and RomM's libretro source puts its title and logo images
+  in among them; which entry to take for `screenshots` is read off real data in Phase 0, not assumed to be the first.
+- RomM's `bezel` and `box2d_side` have no ES-DE folder and are not written.
+
+#### 3b. Fetching from RomM
+
+- The `/api/roms` listing the sync already walks carries every field above (each item is RomM's whole `RomSchema`), so
+  knowing what media a game has costs no extra request.
+- `path_cover_*` and `merged_screenshots` entries are absolute server paths under `/assets/romm/resources/`; every other
+  `*_path` is relative and takes that prefix in front. RomM's nginx serves the prefix without the bearer token.
+- Only files RomM serves are fetched. Never a `ss_metadata.*_url` (a ScreenScraper URL that needs the server's
+  ScreenScraper account), a `gamelist_metadata.*_url` (a `file://` URI on the server) or a `launchbox-file://` one.
+- Every media fetch is a byte-stream fetch through the conditional download the cover already uses
+  (`RommHttpAdapter.download_conditional`). That keeps three rules without a new site to get wrong: a missing file's 404
+  is never `RommNotFoundError`, which downstream is deletion authority (`.claude/rules/romm-http.md`), and never marks
+  RomM unreachable; the request goes out through `_urlopen` with the configured custom headers, as every RomM-origin
+  request does; and a resync revalidates each file by ETag or `Last-Modified`, which matters because only the cover's
+  path carries a `?ts=` cache-buster.
+- **The extension RomM stores is not the format.** RomM writes the provider's bytes under a fixed `.png` or `.mp4` name
+  and checks only the content type. Tender sniffs the bytes, names each file by what it is (lower-case `.png`, `.jpg`,
+  `.webp`, `.mp4`, `.pdf`), and writes nothing for bytes ES-DE does not read. Tender cannot convert: a WebP for an ES-DE
+  without WebP support (Phase 0) is dropped, not turned into a PNG, unless To decide says otherwise.
+- The SteamGridDB fallbacks come from the existing per-ROM cache and pipeline, so they need the user's key and stop at
+  its rate limit (`RATE_LIMITED`); a first fill over a whole library is paced, never a burst.
+
+#### 3c. Writing into ES-DE's media tree
+
+- **Where**: `<MediaDirectory>/<system>/<folder>/<subfolders>/<stem>.<ext>`. The type folder comes before the ROM
+  folder's subfolders, which the media tree mirrors. `<stem>` is the frontend link's name less its last extension; a
+  directory ES-DE interprets as a file keeps its whole name (`Final Fantasy VII.m3u/` → `Final Fantasy VII.m3u.png`). So
+  the media name follows the placeholder shape chosen under To decide, and media written for one shape is renamed when a
+  game changes shape. Because a download only retargets the link, its media stays put.
+- **The media folder is the resolver's answer.** RetroDECK writes ES-DE's `MediaDirectory` from `downloaded_media_path`
+  in `retrodeck.json` (default `~/retrodeck/ES-DE/downloaded_media`), and its Configurator can move it. The vendored
+  resolver does not answer it today, and the invariant register requires every RetroDECK folder Tender writes into to be
+  the resolver's answer through `adapters/retrodeck_folders.py`, with no module of ours reading RetroDECK's settings. So
+  the resolver has to grow that answer (To decide), and a root it only assumed is used for nothing, as for every other
+  RetroDECK folder.
+- **One file per game and type.** ES-DE takes the first of `.png`, `.jpg` and `.webp` that exists
+  (`FileData::getMediafilePath`), so a stale `.png` hides a new `.jpg`. When the extension of a file of Tender's
+  changes, Tender removes its old file in the same step, as ES-DE's own scraper does.
+- **Never over the user's media.** RetroDECK ships with ES-DE's scraper on, so a user may already have media there. A
+  media file Tender did not write is never overwritten, renamed or removed, and where one exists for a game and type
+  under any extension ES-DE reads, Tender writes nothing for that slot.
+- **Ownership** (proposal, To decide): the files live in Tender's cache root, since RomM can serve them again, and the
+  media tree gets an absolute symlink to each, Tender's own exactly when its target is in that cache — the rule frontend
+  links follow. A regular file in the media tree is never Tender's. If Phase 0 shows ES-DE does not follow a symlinked
+  media file, the fallback is regular files, each recorded with its digest and removed only while the digest still
+  matches.
+- **Write before ES-DE starts.** Modern's and Slate's `noMedia` trigger is judged once per system, when ES-DE builds the
+  view, and switches a system with no miximage, screenshot or cover to a layout without media until ES-DE restarts.
+  ES-DE also caches textures by path, so a file replaced in place can keep showing the old image until restart. The
+  library sync writes media and the hooks never do, and the QAM panel says that ES-DE needs a restart to show a first
+  fill.
+- **Removal**: when the library sync removes a game's placeholder, Tender's media for that game goes with it, and
+  nothing else does.
+
+#### 3d. Size and settings
+
+- One switch per ES-DE folder in the ES-DE section of the settings. Proposed defaults (To decide): every image type on;
+  `videos` and `manuals` off, since each runs to megabytes per game and a whole library is thousands of games on the
+  Deck's own storage.
+- The QAM panel reads RomM's `scan.media` (`GET /api/config`, field `SCAN_MEDIA`) and names each switched-on type the
+  server is not set to collect, the way it names ES-DE's custom-event-scripts setting. Tender never changes the server's
+  config.
+
+#### 3e. Gamelist
+
 - **Gamelist**: write name, description, release date, developer, publisher, genre, players and rating into ES-DE's
   `gamelist.xml` for the system. Upstream retired writing gamelists for core selection (ADR-0012); this is metadata
-  only, never `altemulator`.
+  only, never `altemulator`. ES-DE matches media by file name and reads no media path from a gamelist (`FAQ.md`), so the
+  writer writes no media tags either. RomM's own gamelist export (`POST /api/export/gamelist-xml`) writes into the
+  server's platform folder and returns nothing over HTTP, so the Deck cannot use it.
 - **ES-DE rewrites gamelist.xml itself** (favourites, play count, last played, user edits) when it exits. The writer
   must merge, never replace: touch only entries Tender owns, keep every field ES-DE or the user wrote, and never write
   while ES-DE is running. Prefer to write from the library sync and from the ES-DE `quit` hook's aftermath (see §5), and
@@ -136,7 +249,18 @@ Each is "(device)": only a run on the Deck in Game Mode can show it. Record each
 - [ ] Whether a non-zero exit from a `game-start` script stops the launch.
 - [ ] The arguments ES-DE passes each event (expected: ROM path, game name, system name, system full name), and whether
       the ROM path is the link path or the resolved target.
-- [ ] Where RetroDECK's ES-DE reads custom event scripts, `gamelist.xml` and `downloaded_media`.
+- [ ] Where RetroDECK's ES-DE reads custom event scripts, `gamelist.xml` and `downloaded_media` (expected: `scripts/`,
+      `gamelists/<system>/` and `downloaded_media/` under `<RetroDECK home>/ES-DE/`), and that `downloaded_media_path`
+      in `retrodeck.json` equals `MediaDirectory` in ES-DE's `es_settings.xml`.
+- [ ] RomM on the Mac mini is set to collect the media this mode writes: its `scan.media` lists at least `box3d`,
+      `box2d_back`, `logo`, `title_screen`, `physical` and `fanart` (plus `miximage`, `video` as decided), it has a
+      ScreenScraper account configured, and after an "Update Metadata" rescan one ROM's `/api/roms/{id}` shows those
+      `ss_metadata.*_path` fields filled. Also which `merged_screenshots` entry is a gameplay screenshot, and whether
+      Tender's token may read `GET /api/config`.
+- [ ] Which ES-DE build RetroDECK on the Deck runs (WebP media needs ES-DE 3.4 or later), and which theme and variant is
+      active.
+- [ ] ES-DE shows a media file that is a symlink; shows one added while it runs (expected: the next time the game is
+      selected); and shows a file replaced while it runs (expected: the old image until restart).
 - [ ] From inside the RetroDECK sandbox: `curl` exists, `127.0.0.1:<tender port>` is reachable, and Tender's data folder
       is readable.
 - [ ] ES-DE lists a symlink to a zero-byte or tiny stub with a valid extension, and how it treats a symlinked folder.
@@ -155,8 +279,20 @@ Each is "(device)": only a run on the Deck in Game Mode can show it. Record each
 - [ ] Download progress while ES-DE waits: Steam toasts only, or also ES-DE's screen (nothing ES-DE offers is known).
 - [ ] What `Both` means for a game launched from Steam and from ES-DE with different emulators: allowed with the
       game-page warning ADR-0042 already describes, or blocked.
-- [ ] Which media types to write (cover only, or cover + screenshot + marquee + title) and from where (RomM,
-      SteamGridDB).
+- [ ] Which media types are on by default. Proposal: every image type on (`covers`, `marquees`, `screenshots`,
+      `titlescreens`, `3dboxes`, `backcovers`, `physicalmedia`, `fanart`, `miximages`); `videos` and `manuals` off.
+- [ ] Once switched on, whether videos and manuals are written for every game or only for downloaded ones.
+- [ ] Miximages: RomM's ScreenScraper miximage where RomM has one, which looks unlike ES-DE's own; or leave the slot
+      empty for ES-DE's offline generator (Scraper → Miximage settings → Offline generator, a GUI step the QAM panel can
+      name), which builds one from the screenshot, marquee, 3D box or cover and physical media Tender wrote; or both,
+      RomM's first.
+- [ ] SteamGridDB as the fallback for `covers`, `marquees` (its logo) and `fanart` (its hero): on whenever a key is set,
+      or a switch of its own.
+- [ ] Media ownership: symlinks into Tender's cache root (proposal) or regular files recorded with their digests. The
+      Phase 0 symlink fact decides it.
+- [ ] WebP media from RomM where the Deck's ES-DE is older than 3.4: drop it, or vendor a decoder and convert it to PNG.
+- [ ] How the resolver comes to answer ES-DE's media folder: a documented local patch to `_vendor/atlas`
+      (`.claude/rules/vendored-assets.md`), or a change upstream in emu-atlas first.
 - [ ] Hook token lifetime: generated once at install, or rotated on each backend start (the hook reads it from the file
       each call either way).
 
@@ -174,7 +310,20 @@ Each becomes a test seen failing first, or is marked (device).
   point at a stub under `.placeholders/`, downloaded games at the library file.
 - Download retargets the link atomically; uninstall retargets it back; a failed download leaves the stub link intact.
 - No code path passes a stub to an emulator, the resolver's save questions, adoption, or user-placed-file handling.
-- Media files exist for each game under ES-DE's media tree, named to match the game file.
+- For each switched-on type, every game that RomM (or SteamGridDB, for its three fallbacks) has that media for has
+  exactly one file at `<system>/<folder>/<subfolders>/<stem>.<ext>` under ES-DE's media folder, for a placeholder and a
+  downloaded game alike.
+- Each file's extension is what its bytes are; bytes ES-DE does not read are not written; videos and manuals are written
+  only while their switches are on.
+- A media fetch's 404 is never `RommNotFoundError` and never marks RomM unreachable, and every media fetch carries the
+  configured custom headers.
+- A media file Tender did not write is never overwritten, renamed or removed, and a game and type that has one gets
+  nothing from Tender.
+- No game and type is left with two of Tender's files that differ only by extension.
+- The QAM panel names each switched-on type RomM's `scan.media` leaves out.
+- When the sync removes a game's placeholder, Tender's media for that game goes, and nothing else in the media tree.
+- (device) With RomM collecting them, RetroDECK's theme shows a game's marquee, physical media and screenshot, and the
+  media viewer its back cover, title screen and fan art.
 - The gamelist writer changes only Tender-owned entries, keeps every other field and entry byte-for-byte, and refuses to
   write while ES-DE runs.
 - The hook routes refuse a missing or wrong hook token, and any path that is not a Tender link, in the order `host.md`
@@ -191,10 +340,12 @@ Each becomes a test seen failing first, or is marked (device).
 
 ## Suggested order of work
 
-1. Phase 0 on the device.
+1. Phase 0 on the device, with the Mac mini's `scan.media` widened and its library rescanned first.
 2. Library surface setting, shortcut skip and removal.
 3. Placeholder links, retarget on download and uninstall, stub exclusion everywhere.
-4. Media writer, then the merge-safe gamelist writer.
+4. Media: the resolver's media-folder answer, the field mapping and the fetch through the conditional download, the
+   writer and its ownership rule, the per-type switches and the `scan.media` notice. Then the merge-safe gamelist
+   writer.
 5. Hook token and routes on the loopback server.
 6. Hook scripts, their install and removal, and the QAM notice for ES-DE's scripts setting.
 7. Save sync and session recording wired to `prepare` / `finish`.
