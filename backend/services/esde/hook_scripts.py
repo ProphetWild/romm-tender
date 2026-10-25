@@ -27,6 +27,15 @@ if TYPE_CHECKING:
     from services.protocols import DebugLogger, EsdeHookScriptStore, RetroDeckFolders
 
 
+@dataclass(frozen=True, slots=True)
+class HookScriptsReading:
+    """ES-DE's scripts folder, how many of Tender's scripts are in it, and how many Tender writes."""
+
+    folder: str
+    installed: int
+    expected: int
+
+
 @dataclass(frozen=True)
 class EsdeHookScriptServiceConfig:
     """Frozen wiring bundle handed to ``EsdeHookScriptService.__init__``.
@@ -70,6 +79,17 @@ class EsdeHookScriptService:
     async def surface_stored(self, surface: LibrarySurface) -> None:
         """Write the scripts once *surface* writes ES-DE, and remove Tender's once it does not."""
         await self._loop.run_in_executor(None, self._install_io if writes_esde(surface) else self._remove_io)
+
+    async def read_installed(self) -> HookScriptsReading | FolderRefused:
+        """How many of Tender's scripts are in ES-DE's scripts folder, or why that folder is not known."""
+        return await self._loop.run_in_executor(None, self._read_installed_io)
+
+    def _read_installed_io(self) -> HookScriptsReading | FolderRefused:
+        folders = self._retrodeck_folders.esde_folders()
+        if isinstance(folders, FolderRefused):
+            return folders
+        installed = sum(self._store.holds(script_path(folders.scripts, script.event)) for script in self._scripts)
+        return HookScriptsReading(folder=folders.scripts, installed=installed, expected=len(self._scripts))
 
     def _install_io(self) -> int:
         folder = self._scripts_folder_io()

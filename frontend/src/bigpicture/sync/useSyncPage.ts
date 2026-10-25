@@ -34,7 +34,7 @@ import {
   syncPreview,
   startSync,
 } from "../../api/backend";
-import type { SessionBudgetStatus, SyncPreview, SyncRunRecord, SyncStats } from "../../types";
+import type { LibrarySurface, SessionBudgetStatus, SyncPreview, SyncRunRecord, SyncStats } from "../../types";
 import { detach } from "../../utils/detach";
 import {
   adoptPreview,
@@ -106,7 +106,7 @@ export interface SyncPageState {
   budget: SessionBudgetStatus | null;
   resume: SyncResumeState;
   /** What the button that starts things says right now — what the press does,
-   *  which Skip preview decides. The idle line quotes it rather than spelling a
+   *  which {@link noPreview} decides. The idle line quotes it rather than spelling a
    *  name of its own, and so does the session-budget card, through
    *  {@link primaryAction}. */
   startLabel: string;
@@ -125,6 +125,10 @@ export interface SyncPageState {
   /** The same, for the controls column's own two actions. */
   optionsStatus: string | null;
   skipPreview: boolean;
+  /** Why the start button starts the run rather than a preview — the Skip
+   *  preview setting, or a library surface whose sync creates no shortcut for a
+   *  preview to count — or `null` where it asks for a preview. */
+  noPreview: "skip_preview" | "esde" | null;
   /** What a successful Force Full Sync answered, held until a run has been and
    *  gone. Non-null is the armed state: the clear has been made, so pressing
    *  again would clear what is already clear. */
@@ -197,6 +201,10 @@ export function useSyncPage(): SyncPageState {
   // render, which must stay pure.
   const [nowMs, setNowMs] = useState<number | null>(null);
   const [skipPreview, setSkipPreviewState] = useState(false);
+  const [librarySurface, setLibrarySurface] = useState<LibrarySurface>("steam");
+  // The ES-DE surface's sync emits no shortcut, and the preview is a count of
+  // shortcut changes, so there is nothing for one to show.
+  const noPreview = skipPreview ? "skip_preview" : librarySurface === "esde" ? "esde" : null;
   const [busy, setBusy] = useState(false);
   // The run a cancel was asked for, by id — `""` where the frame carried none,
   // which is every run this page has started optimistically and not yet heard
@@ -473,7 +481,7 @@ export function useSyncPage(): SyncPageState {
     // shortcut delivery, per-unit crash safety, no upfront full library fetch —
     // and the run view is what the reader watches instead of a table. The
     // setting lives on this page, so the button beside it has to mean it.
-    if (skipPreview) {
+    if (noPreview !== null) {
       detach(startRunDirectly());
       return;
     }
@@ -491,7 +499,10 @@ export function useSyncPage(): SyncPageState {
     // side's job — an impure read, so it belongs in a handler.
     detach(refreshPendingPreview().then(() => setNowMs(Date.now())));
     getSettings()
-      .then((s) => setSkipPreviewState(s.skip_preview ?? false))
+      .then((s) => {
+        setSkipPreviewState(s.skip_preview ?? false);
+        setLibrarySurface(s.library_surface ?? "steam");
+      })
       .catch((e) => logError(`Failed to read the skip-preview setting: ${e}`));
   }, [loadRuns]);
 
@@ -572,7 +583,7 @@ export function useSyncPage(): SyncPageState {
 
   const secondsLeft = preview === null || nowMs === null ? null : previewSecondsLeft(preview, nowMs);
   const resume = syncResumeState(stats);
-  const startLabel = startButtonLabel(resume, skipPreview);
+  const startLabel = startButtonLabel(resume, noPreview !== null);
   const previewExpired = secondsLeft === 0;
   const cancelling = cancellingRunId !== null && running && (cancellingRunId === "" || cancellingRunId === run.runId);
 
@@ -593,6 +604,7 @@ export function useSyncPage(): SyncPageState {
     status,
     optionsStatus,
     skipPreview,
+    noPreview,
     fullSyncCleared,
     runs,
     runsLoading,

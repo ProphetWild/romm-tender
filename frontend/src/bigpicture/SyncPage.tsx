@@ -99,9 +99,18 @@ const SyncMainColumn: FC<{ state: SyncPageState }> = ({ state }) => {
   );
 };
 
+const IDLE_LINES: Record<"skip_preview" | "esde" | "preview", (startLabel: string) => string> = {
+  skip_preview: (startLabel) =>
+    `Nothing is waiting to be applied. Skip preview is on, so ${startLabel} applies changes without showing them first.`,
+  esde: (startLabel) =>
+    `Nothing is waiting to be applied. The library goes to ES-DE alone, which gets no preview, so ${startLabel} applies changes straight away.`,
+  preview: () => "Nothing is waiting to be applied. Start a preview to see what would change.",
+};
+
 /** Nothing pending and nothing running: one line saying so, and the button that
- *  changes it. **The button says what the press does** — Skip preview decides
- *  whether that is working out a preview or starting the run, and only in the
+ *  changes it. **The button says what the press does** — Skip preview, or the
+ *  ES-DE surface, decides whether that is working out a preview or starting the
+ *  run, and only in the
  *  second case is the name the resume question's answer. The line above it and
  *  the session-budget card above that both quote the name rather than spelling
  *  one of their own, so neither can name a button that is not on screen. What a
@@ -110,11 +119,7 @@ const SyncMainColumn: FC<{ state: SyncPageState }> = ({ state }) => {
 const IdlePanel: FC<{ state: SyncPageState }> = ({ state }) => (
   <>
     <SectionTitle title="Preview" />
-    <Muted>
-      {state.skipPreview
-        ? `Nothing is waiting to be applied. Skip preview is on, so ${state.startLabel} applies changes without showing them first.`
-        : "Nothing is waiting to be applied. Start a preview to see what would change."}
-    </Muted>
+    <Muted>{IDLE_LINES[state.noPreview ?? "preview"](state.startLabel)}</Muted>
     <ButtonRow padding="4px 16px">
       <DialogButton style={FLAT_BUTTON} disabled={state.busy} onClick={state.startPreview}>
         {state.startLabel}

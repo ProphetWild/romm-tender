@@ -3,8 +3,9 @@
 One row per platform, keyed by ``platform_slug`` — the per-platform completion
 stamp the incremental-skip gate reads (ADR-0023). A leaf table with no cascade
 children, so ``save`` upserts with ``INSERT OR REPLACE``, ``delete`` drops one
-platform's row (apply-start clear), ``revoke_skip`` flags one in place, and
-``clear`` drops the whole table (Force Full Sync).
+platform's row (apply-start clear), ``revoke_skip`` flags one in place,
+``revoke_every_skip`` flags every one, and ``clear`` drops the whole table
+(Force Full Sync).
 """
 
 from __future__ import annotations
@@ -61,6 +62,9 @@ class SqlitePlatformSyncStateRepository(BaseRepository):
 
     def revoke_skip(self, platform_slug: str) -> None:
         self._conn.execute("UPDATE platform_sync_state SET skip_revoked = 1 WHERE platform_slug = ?", (platform_slug,))
+
+    def revoke_every_skip(self) -> None:
+        self._conn.execute("UPDATE platform_sync_state SET skip_revoked = 1")
 
     def has_any(self) -> bool:
         return (

@@ -1555,6 +1555,70 @@ def _record_launch_options(uow, rom_id: int, launch_options: str = "flatpak run 
         uow.roms.set_applied_launch_options(rom_id, rom.applied_launch_options)
 
 
+class TestRevokeEverySkip:
+    """The switch to a surface that writes ES-DE takes every skip away and forgets nothing else."""
+
+    async def test_every_platform_stamp_is_kept_with_its_skip_taken_away(self, library):
+        from domain.platform_sync_state import PlatformSyncState
+
+        uow = library.uow
+        with uow:
+            uow.platform_sync_state.save(
+                PlatformSyncState.stamp(platform_slug="n64", at="2025-01-01T00:00:00", rom_count=3, fetch_id="f-1")
+            )
+            uow.platform_sync_state.save(
+                PlatformSyncState.stamp(platform_slug="snes", at="2025-01-01T00:00:00", rom_count=9)
+            )
+
+        await library.sync.revoke_every_skip()
+
+        with uow:
+            n64 = uow.platform_sync_state.get("n64")
+            snes = uow.platform_sync_state.get("snes")
+        assert n64 is not None
+        assert (n64.fetch_id, n64.rom_count, n64.skip_revoked) == ("f-1", 3, True)
+        assert snes is not None
+        assert snes.skip_revoked is True
+
+    async def test_every_collection_stamp_goes(self, library):
+        from domain.collection_sync_state import CollectionSyncState
+
+        uow = library.uow
+        with uow:
+            uow.collection_sync_state.save(
+                CollectionSyncState.stamp(
+                    collection_id="5",
+                    collection_kind="standard",
+                    updated_at="2025-01-01T00:00:00",
+                    completed_at="2025-01-01T00:00:00",
+                    rom_count=0,
+                    member_rom_ids=(),
+                )
+            )
+
+        await library.sync.revoke_every_skip()
+
+        with uow:
+            assert uow.collection_sync_state.has_any() is False
+
+    async def test_the_recorded_launch_options_and_the_run_history_stay(self, library):
+        from domain.sync_run import SyncRun
+
+        uow = library.uow
+        _seed_rom(uow, 7, app_id=111, platform_slug="n64")
+        run = SyncRun.start(id="run-1", at="2025-01-01T00:00:00", platforms_planned=1, roms_planned=1)
+        run.complete("2025-01-01T00:10:00", ["N64"], [])
+        with uow:
+            uow.roms.set_applied_launch_options(7, "flatpak run app 'x.zip'")
+            uow.sync_runs.save(run)
+
+        await library.sync.revoke_every_skip()
+
+        with uow:
+            assert uow.roms.get(7).applied_launch_options == "flatpak run app 'x.zip'"
+            assert uow.sync_runs.get("run-1") is not None
+
+
 class TestGetSyncStatsResumeInputs:
     """``resumable_games`` / ``has_completion_stamp`` — the two kinds of durable
     progress the panel's "Resume Sync" offer reads (#1789).

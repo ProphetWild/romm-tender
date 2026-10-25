@@ -106,6 +106,8 @@ class FakeRommApi:
         self.devices: list[dict[str, Any]] = []
         self.current_user: dict[str, Any] = {"id": 1, "username": "tester"}
         self.heartbeat_response: dict[str, Any] = {"status": "ok"}
+        # RomM's ``scan.media``: its default, which ``get_scan_media`` answers.
+        self.scan_media: list[str] = ["box2d", "screenshot", "manual"]
         self._version: str | None = None
         self._save_content: dict[int, bytes] = {}
         # DeviceSaveSync rows: (device_id, save_id) -> last_synced_at (ISO). The
@@ -175,6 +177,7 @@ class FakeRommApi:
         # Raised by ``download_media`` for one server path alone.
         self.download_media_side_effects: dict[str, Exception] = {}
         self.get_current_user_side_effect: Exception | None = None
+        self.get_scan_media_side_effect: Exception | None = None
         self.ingest_play_sessions_side_effect: Exception | None = None
         self.list_play_sessions_side_effect: Exception | None = None
         self.register_device_side_effect: Exception | None = None
@@ -269,6 +272,11 @@ class FakeRommApi:
         self._log("heartbeat_once")
         self._check_fail(self.heartbeat_side_effect)
         return dict(self.heartbeat_response)
+
+    def get_scan_media(self) -> tuple[str, ...]:
+        self._log("get_scan_media")
+        self._check_fail(self.get_scan_media_side_effect)
+        return tuple(self.scan_media)
 
     def get_current_user(self) -> dict[str, Any]:
         self._log("get_current_user")

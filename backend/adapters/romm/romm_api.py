@@ -157,6 +157,20 @@ class RommApiAdapter:
     def list_platforms(self) -> list[dict[str, Any]]:
         return self._request_listing("/api/platforms")
 
+    def get_scan_media(self) -> tuple[str, ...]:
+        """The media types RomM's server config lists under ``scan.media``, in one short attempt.
+
+        Read off ``SCAN_MEDIA`` in ``GET /api/config``, which RomM answers
+        without a sign-in. An answer that carries no list of names there raises
+        :class:`RommApiError`, never an empty tuple in its place: an empty one
+        says RomM collects nothing.
+        """
+        config = self._client.request_once("/api/config", timeout=self._PROBE_TIMEOUT_SECONDS)
+        media = config.get("SCAN_MEDIA") if isinstance(config, dict) else None
+        if not isinstance(media, list) or not all(isinstance(value, str) for value in media):
+            raise RommApiError("Unexpected response from /api/config: no SCAN_MEDIA list")
+        return tuple(media)
+
     def get_current_user(self) -> dict[str, Any]:
         return self._client.request("/api/users/me")
 

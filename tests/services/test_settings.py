@@ -1211,6 +1211,71 @@ class TestSetLibrarySurface:
         assert listener.told == []
 
 
+class _RecordingSkipRevoker:
+    """Records each revocation, with whether the surface was persisted by then."""
+
+    def __init__(self, settings_persister: MagicMock, order: list[str] | None = None) -> None:
+        self._settings_persister = settings_persister
+        self._order = order
+        self.revoked: list[bool] = []
+
+    async def revoke_every_skip(self) -> None:
+        self.revoked.append(self._settings_persister.save_settings.called)
+        if self._order is not None:
+            self._order.append("revoker")
+
+
+class TestTheSwitchToEsdeRevokesEverySkip:
+    @pytest.fixture
+    def revoker(self, service, settings_persister) -> _RecordingSkipRevoker:
+        revoker = _RecordingSkipRevoker(settings_persister)
+        service._skip_revoker = revoker
+        return revoker
+
+    @pytest.mark.parametrize(
+        ("before", "after"), [("steam", "esde"), ("steam", "both"), (None, "esde"), ("nonsense", "both")]
+    )
+    async def test_a_surface_writing_es_de_where_the_last_did_not_revokes_once_it_is_persisted(
+        self, service, settings, revoker, before, after
+    ):
+        settings["library_surface"] = before
+
+        await service.set_library_surface(after)
+
+        assert revoker.revoked == [True]
+
+    async def test_with_nothing_stored_before_a_switch_to_esde_revokes(self, service, revoker):
+        await service.set_library_surface("esde")
+
+        assert revoker.revoked == [True]
+
+    @pytest.mark.parametrize(
+        ("before", "after"),
+        [("esde", "esde"), ("esde", "both"), ("both", "esde"), ("both", "both"), ("esde", "steam"), ("steam", "steam")],
+    )
+    async def test_any_other_switch_revokes_nothing(self, service, settings, revoker, before, after):
+        settings["library_surface"] = before
+
+        await service.set_library_surface(after)
+
+        assert revoker.revoked == []
+
+    async def test_a_refusal_revokes_nothing(self, service, revoker):
+        with pytest.raises(Refused):
+            await service.set_library_surface("shortcuts")
+
+        assert revoker.revoked == []
+
+    async def test_the_skips_are_revoked_before_any_listener_is_told(self, service, settings_persister):
+        order: list[str] = []
+        service._skip_revoker = _RecordingSkipRevoker(settings_persister, order)
+        service._surface_listeners = (_RecordingSurfaceListener(settings_persister, order, "listener"),)
+
+        await service.set_library_surface("esde")
+
+        assert order == ["revoker", "listener"]
+
+
 # ── settings reset notice ─────────────────────────────────────────────
 
 

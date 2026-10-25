@@ -31,15 +31,16 @@ const PREVIEW_LABEL = "Check for changes";
 /**
  * The name on the Sync page's start button: what the press DOES.
  *
- * Skip preview decides which of the two things a press is. With it off the press
- * works out a preview and adds nothing to Steam, however much of the library is
- * already synced — so the resume question, which is about a RUN, has nothing to
- * say about the name; it is answered under the button instead, by
- * {@link formatResumeScope}. With it on the press starts the run itself, and
- * then the name is the resume question's answer.
+ * *startsRun* — Skip preview, or the ES-DE surface, which has no preview —
+ * decides which of the two things a press is. Without it the press works out a
+ * preview and adds nothing to Steam, however much of the library is already
+ * synced — so the resume question, which is about a RUN, has nothing to say
+ * about the name; it is answered under the button instead, by
+ * {@link formatResumeScope}. With it the press starts the run itself, and then
+ * the name is the resume question's answer.
  */
-export function startButtonLabel(resume: SyncResumeState, skipPreview: boolean): string {
-  return skipPreview ? resume.label : PREVIEW_LABEL;
+export function startButtonLabel(resume: SyncResumeState, startsRun: boolean): string {
+  return startsRun ? resume.label : PREVIEW_LABEL;
 }
 
 /**

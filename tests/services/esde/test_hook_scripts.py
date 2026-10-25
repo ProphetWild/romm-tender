@@ -10,8 +10,9 @@ from fakes.fake_retrodeck_folders import FakeRetroDeckFolders
 from fakes.running_loop import running_loop
 
 from domain.esde_hook_scripts import EsdeHookAddress, hook_scripts, script_path
-from domain.retrodeck_folders import switched_off
+from domain.retrodeck_folders import FolderRefused, switched_off
 from services.esde import EsdeHookScriptService, EsdeHookScriptServiceConfig
+from services.esde.hook_scripts import HookScriptsReading
 
 _ADDRESS = EsdeHookAddress(port_file="/data/esde-hooks/port", header_file="/data/esde-hooks/header", route_prefix="/h/")
 _SCRIPTS = "/retrodeck/ES-DE/scripts"
@@ -37,6 +38,9 @@ class _Store:
         if path in self.failing:
             raise OSError("read-only")
         return self.scripts.pop(path, None) is not None
+
+    def holds(self, path: str) -> bool:
+        return path in self.scripts
 
 
 @dataclass
@@ -149,3 +153,35 @@ class TestWhenTheSurfaceIsStored:
         await h.service.surface_stored("steam")
 
         assert h.store.scripts == _expected()
+
+
+class TestWhatIsThere:
+    async def test_every_script_of_tenders_there_reads_as_all_installed(self, h):
+        await h.service.surface_stored("esde")
+
+        reading = await h.service.read_installed()
+
+        assert reading == HookScriptsReading(folder=_SCRIPTS, installed=len(_expected()), expected=len(_expected()))
+
+    async def test_none_there_reads_as_none_installed(self, h):
+        reading = await h.service.read_installed()
+
+        assert reading == HookScriptsReading(folder=_SCRIPTS, installed=0, expected=len(_expected()))
+
+    async def test_a_name_holding_the_users_own_script_is_not_counted(self, h):
+        h.store.theirs.add(script_path(_SCRIPTS, "game-start"))
+        await h.service.surface_stored("esde")
+
+        reading = await h.service.read_installed()
+
+        assert isinstance(reading, HookScriptsReading)
+        assert reading.installed == len(_expected()) - 1
+
+    async def test_es_des_folders_refused_answer_the_refusal(self, h):
+        refusal = switched_off("Games in ES-DE")
+        h.folders.download_refusal = refusal
+
+        reading = await h.service.read_installed()
+
+        assert isinstance(reading, FolderRefused)
+        assert reading.reason == refusal.reason

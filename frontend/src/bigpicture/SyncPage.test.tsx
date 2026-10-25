@@ -37,7 +37,11 @@ import {
   updateSyncProgress,
 } from "../utils/syncProgress";
 import { resetEta } from "../utils/syncEta";
-import { adoptPreview, resetPendingPreviewStoreForTests } from "../utils/pendingPreviewStore";
+import {
+  adoptPreview,
+  getPendingPreviewSnapshot,
+  resetPendingPreviewStoreForTests,
+} from "../utils/pendingPreviewStore";
 import { attachRunUnitsMirror, resetRunUnitsStoreForTests, seedRunUnits } from "../utils/runUnitsStore";
 import { resetSyncStatsStoreForTests } from "../utils/syncStatsStore";
 import { NEW_ITEM_SEC, UPDATED_ITEM_SEC, COVER_DOWNLOAD_SEC, FETCH_ALLOWANCE_SEC } from "../utils/syncEstimate";
@@ -1817,6 +1821,56 @@ describe("SyncPage", () => {
   // ===========================================================================
   // Options — the persisted setting and the destructive button.
   // ===========================================================================
+  // ===========================================================================
+  // The ES-DE surface — its sync creates no shortcuts, so a preview that counts
+  // them has nothing to say, and the press starts the run as Skip preview does.
+  // ===========================================================================
+  describe("under the ES-DE surface", () => {
+    it("the start button starts the run, never a preview, with Skip preview off", async () => {
+      vi.mocked(backend.getSettings).mockResolvedValue({ ...defaultSettings(), library_surface: "esde" });
+      const { container } = await renderPage();
+
+      await act(async () => {
+        fireEvent.click(buttonByExactText(container, "Sync Library")!);
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(vi.mocked(backend.startSync)).toHaveBeenCalled();
+      expect(vi.mocked(backend.syncPreview)).not.toHaveBeenCalled();
+      // No preview was staged on either side, so nothing is left to answer.
+      expect(getPendingPreviewSnapshot()).toBeNull();
+    });
+
+    it("the idle line says ES-DE gets no preview, quoting the button", async () => {
+      vi.mocked(backend.getSettings).mockResolvedValue({ ...defaultSettings(), library_surface: "esde" });
+      const { container } = await renderPage();
+
+      expect(container.textContent).toContain(
+        "Nothing is waiting to be applied. The library goes to ES-DE alone, which gets no preview, so Sync Library applies changes straight away.",
+      );
+    });
+
+    it("with Steam shortcuts beside ES-DE the press still asks for a preview", async () => {
+      vi.mocked(backend.getSettings).mockResolvedValue({ ...defaultSettings(), library_surface: "both" });
+      const { container } = await renderPage();
+
+      expect(buttonByExactText(container, "Check for changes")).not.toBeNull();
+      await act(async () => {
+        fireEvent.click(buttonByExactText(container, "Check for changes")!);
+        await Promise.resolve();
+      });
+      expect(vi.mocked(backend.startSync)).not.toHaveBeenCalled();
+    });
+
+    it("leaves the Skip preview switch as it was stored", async () => {
+      vi.mocked(backend.getSettings).mockResolvedValue({ ...defaultSettings(), library_surface: "esde" });
+      const { container } = await renderPage();
+
+      expect((container.querySelector('[data-testid="toggle-input"]') as HTMLInputElement).checked).toBe(false);
+    });
+  });
+
   describe("options", () => {
     const toggle = (c: HTMLElement) => c.querySelector('[data-testid="toggle-input"]') as HTMLInputElement;
 

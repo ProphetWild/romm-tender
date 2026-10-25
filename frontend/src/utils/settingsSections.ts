@@ -9,6 +9,7 @@ export const SETTINGS_SECTIONS = [
   "save-sync",
   "controller",
   "steam-library",
+  "esde",
   "emulator-sources",
   "tender-folder",
   "updates",

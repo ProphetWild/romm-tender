@@ -150,3 +150,27 @@ class TestRemoving:
         assert adapter.remove(str(path)) is False
 
         assert path.exists()
+
+
+class TestWhetherOneIsThere:
+    def test_a_script_of_tenders_is(self, adapter, path):
+        adapter.install(str(path), _OURS)
+
+        assert adapter.holds(str(path)) is True
+
+    def test_nothing_there_is_not(self, adapter, path):
+        assert adapter.holds(str(path)) is False
+
+    def test_a_script_tender_did_not_write_is_not(self, adapter, path):
+        path.parent.mkdir(parents=True)
+        path.write_text(_THEIRS, encoding="utf-8")
+
+        assert adapter.holds(str(path)) is False
+
+    def test_a_link_to_a_script_of_tenders_is_not(self, adapter, path, tmp_path):
+        target = tmp_path / "elsewhere.sh"
+        target.write_text(_OURS, encoding="utf-8")
+        path.parent.mkdir(parents=True)
+        path.symlink_to(target)
+
+        assert adapter.holds(str(path)) is False

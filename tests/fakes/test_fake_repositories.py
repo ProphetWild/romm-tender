@@ -485,6 +485,17 @@ class TestFakePlatformSyncStateRepository:
         assert refreshed.skip_revoked is False
         assert repo.has_any() is True
 
+    def test_revoke_every_skip_flags_every_stored_stamp(self):
+        repo = FakePlatformSyncStateRepository()
+        repo.save(PlatformSyncState.stamp(platform_slug="n64", at="2026-01-01T00:00:00+00:00", rom_count=3))
+        repo.save(PlatformSyncState.stamp(platform_slug="snes", at="2026-01-01T00:00:00+00:00", rom_count=200))
+
+        repo.revoke_every_skip()
+
+        stamps = [repo.get(slug) for slug in ("n64", "snes")]
+        assert [stamp is not None and stamp.skip_revoked for stamp in stamps] == [True, True]
+        assert repo.has_any() is False
+
 
 def _collection_stamp(collection_id: str, kind: str, *, members: tuple[int, ...] = (1,)) -> CollectionSyncState:
     return CollectionSyncState.stamp(

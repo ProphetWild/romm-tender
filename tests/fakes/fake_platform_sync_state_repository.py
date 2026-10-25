@@ -32,6 +32,9 @@ class FakePlatformSyncStateRepository:
         if stamp is not None:
             self._stamps[platform_slug] = replace(stamp, skip_revoked=True)
 
+    def revoke_every_skip(self) -> None:
+        self._stamps = {slug: replace(stamp, skip_revoked=True) for slug, stamp in self._stamps.items()}
+
     def has_any(self) -> bool:
         return any(not stamp.skip_revoked for stamp in self._stamps.values())
 

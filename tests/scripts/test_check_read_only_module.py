@@ -70,6 +70,7 @@ _EXPECTED_WRITES = frozenset(
         "delete_intersecting",
         "delete_slot",
         "replace_all",
+        "revoke_every_skip",
         "revoke_skip",
         "save",
         "set",

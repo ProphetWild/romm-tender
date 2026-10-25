@@ -26,36 +26,29 @@ import {
   logError,
   logInfo,
   logWarn,
-  removeAllShortcuts,
-  reportRemovalResults,
   uninstallAllRoms,
   updateWhitelistSettings,
 } from "../../api/backend";
 import type { DataInventory } from "../../types";
-import { clearAllRomMCollections } from "../../utils/collections";
 import { detach } from "../../utils/detach";
 import { formatUninstallStatus } from "../../utils/formatters";
 import { batchConfirmLaunchOptions } from "../../utils/launchOptionsReconcile";
 import {
   capturePruneLeaseAdmission,
-  isPruneLeaseCancellation,
-  isPruneLeaseCancelled,
   mountPruneLeaseOwner,
   releasePruneLeasesByOwner,
   withPruneLease,
 } from "../../utils/pruneLease";
 import { pluralize } from "../../utils/pluralize";
 import { getPruneState, onPruneStateChange } from "../../utils/pruneStore";
+import { removeEveryTenderShortcut } from "../../utils/removeAllShortcuts";
 import { removeShortcutsPaced } from "../../utils/shortcutRemoval";
 import {
   getAllNonSteamShortcutAppIds,
-  getLiveRomMShortcutAppIds,
   scanShortcutOwnership,
   type ShortcutOwnership,
 } from "../../utils/steamShortcuts";
-import { withTimeout } from "../../utils/withTimeout";
 
-const REMOVAL_REPORT_TIMEOUT_MS = 15000;
 // Process-local: the owner is a key in `pruneLease`'s own map, so it has to be
 // unique among the pages that hold leases and means nothing outside this run.
 const DATA_PAGE_LEASE_OWNER = "data-management";
@@ -396,78 +389,26 @@ export function useDataPage(): DataPageState {
   const handleRemoveAllShortcuts = async () => {
     await runRemoval("Removing shortcuts", async (onProgress) => {
       setShortcutStatus("Removing all shortcuts...");
-      let removedCount = 0;
-      const admission = capturePruneLeaseAdmission(DATA_PAGE_LEASE_OWNER);
-      try {
-        const result = await removeAllShortcuts();
-        if (!result.success) {
-          // A refusal by the update, migration, sync or prune rule carries no
-          // app_ids/rom_ids — surface its message and remove nothing.
-          setShortcutStatus(result.message ?? "Failed to remove shortcuts");
-        } else {
-          // The backend list is the DB binding map (roms.shortcut_app_id). A
-          // crashed sync run's in-flight chunk can leave RomM-owned shortcuts in
-          // Steam (exe = bin/tender-rom-launcher) that were never committed — no binding,
-          // so the backend never returns them. The live exe-ownership scan sees
-          // them; remove the UNION so no orphan is left behind.
-          // Why a shortcut removal un-asks the grid count:
-          // `docs/architecture/qam-panel.md`, section Data Management.
-          setOrphanedGridImages(NOT_ASKED);
-          const backendAppIds = result.app_ids ?? [];
-          const removed = new Set<number>(backendAppIds);
-          await withPruneLease(
-            result.prune_lease_token,
-            "All-shortcut removal",
-            async (signal) => {
-              await removeShortcutsPaced(backendAppIds, onProgress, signal);
-              if (isPruneLeaseCancelled(signal)) return;
-              const liveAppIds = await getLiveRomMShortcutAppIds();
-              if (isPruneLeaseCancelled(signal)) return;
-              if (liveAppIds === null) {
-                // The scan could not run (Steam's shortcut store was unreadable) —
-                // fall back to the backend-bound list alone rather than skip removal.
-                logWarn("Live RomM shortcut scan unavailable — removed backend-bound shortcuts only.");
-              } else {
-                const orphans = liveAppIds.filter((appId) => !removed.has(appId));
-                logInfo(`Remove-all: ${orphans.length} live-scanned RomM shortcut(s) were not in the backend list.`);
-                // Continue the counter across the orphan sweep: offset by the backend
-                // count so "removed of total" stays cumulative (orphans are usually none).
-                await removeShortcutsPaced(
-                  orphans,
-                  (done, orphanTotal) => onProgress(backendAppIds.length + done, backendAppIds.length + orphanTotal),
-                  signal,
-                );
-                if (isPruneLeaseCancelled(signal)) return;
-                for (const appId of orphans) removed.add(appId);
-              }
-              removedCount = removed.size;
-              await clearAllRomMCollections(signal);
-              if (isPruneLeaseCancelled(signal)) return;
-              // rom_ids are backend DB rows — orphans have none, so report only the
-              // backend set exactly as before.
-              if (result.rom_ids?.length || result.prune_lease_token) {
-                await withTimeout(
-                  reportRemovalResults(result.rom_ids ?? [], result.prune_lease_token ?? null),
-                  REMOVAL_REPORT_TIMEOUT_MS,
-                );
-              }
-            },
-            DATA_PAGE_LEASE_OWNER,
-            admission,
-          );
-          setShortcutStatus(result.message ?? "All shortcuts removed");
-          setShortcutCount({ state: "answered", value: 0 });
-        }
-      } catch (e) {
-        // Teardown cancellation, not a failed removal — the backend work already
-        // committed and there is no panel left to refresh or report into.
-        if (isPruneLeaseCancellation(e, admission)) {
-          logWarn(`All-shortcut removal continuation was cancelled: ${e}`);
+      // Why a shortcut removal un-asks the grid count:
+      // `docs/architecture/qam-panel.md`, section Data Management.
+      const outcome = await removeEveryTenderShortcut(DATA_PAGE_LEASE_OWNER, onProgress, () =>
+        setOrphanedGridImages(NOT_ASKED),
+      );
+      switch (outcome.kind) {
+        case "cancelled":
           return;
-        }
-        setShortcutStatus("Failed to remove shortcuts");
+        case "refused":
+          setShortcutStatus(outcome.message ?? "Failed to remove shortcuts");
+          break;
+        case "removed":
+          setShortcutStatus(outcome.message ?? "All shortcuts removed");
+          setShortcutCount({ state: "answered", value: 0 });
+          break;
+        case "failed":
+          setShortcutStatus("Failed to remove shortcuts");
+          break;
       }
-      await recountAfterStoreSettles(removedCount, refreshNonSteam);
+      await recountAfterStoreSettles(outcome.kind === "refused" ? 0 : outcome.removedCount, refreshNonSteam);
     });
   };
 

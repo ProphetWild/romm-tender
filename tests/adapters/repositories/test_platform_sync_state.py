@@ -127,6 +127,27 @@ class TestRevokeSkip:
         assert loaded.skip_revoked is False
 
 
+class TestRevokeEverySkip:
+    def test_every_stamp_is_kept_and_flagged(self, uow: SqliteUnitOfWork):
+        uow.platform_sync_state.save(_stamp("n64", rom_count=3))
+        uow.platform_sync_state.save(_stamp("snes", rom_count=200))
+
+        uow.platform_sync_state.revoke_every_skip()
+
+        n64 = uow.platform_sync_state.get("n64")
+        snes = uow.platform_sync_state.get("snes")
+        assert n64 is not None
+        assert (n64.rom_count, n64.skip_revoked) == (3, True)
+        assert snes is not None
+        assert (snes.rom_count, snes.skip_revoked) == (200, True)
+        assert uow.platform_sync_state.has_any() is False
+
+    def test_no_stamps_is_a_noop(self, uow: SqliteUnitOfWork):
+        uow.platform_sync_state.revoke_every_skip()
+
+        assert uow.platform_sync_state.get("n64") is None
+
+
 class TestHasAny:
     def test_false_when_no_stamps(self, uow: SqliteUnitOfWork):
         assert uow.platform_sync_state.has_any() is False

@@ -1,5 +1,5 @@
 /**
- * The Settings page: eight sections on the left, the focused section's controls
+ * The Settings page: ten sections on the left, the focused section's controls
  * on the right.
  *
  * Every section's state and every handler lives here rather than in the section
@@ -79,6 +79,8 @@ import { RegisteredDevicesSection } from "./settings/RegisteredDevicesSection";
 import { ControllerSection } from "./settings/ControllerSection";
 import { AdvancedSection } from "./settings/AdvancedSection";
 import { InterfaceSection } from "./settings/InterfaceSection";
+import { EsdeSection } from "./settings/EsdeSection";
+import { useEsdeSettings } from "./settings/useEsdeSettings";
 import { UpdatesSection } from "./settings/UpdatesSection";
 import { EmulatorSourcesSection } from "./settings/EmulatorSourcesSection";
 import { TenderFolderSection } from "./settings/TenderFolderSection";
@@ -112,6 +114,7 @@ const SECTION_LABELS: Record<SettingsSection, string> = {
   "save-sync": "Save Sync",
   controller: "Controller",
   "steam-library": "Steam Library",
+  esde: "ES-DE",
   "emulator-sources": "Emulator sources",
   "tender-folder": TENDER_FOLDER_SECTION,
   updates: "Updates",
@@ -203,6 +206,8 @@ export const SettingsPage: FC<SettingsPageProps> = ({ onBack, section }) => {
   const [emulatorSources, setEmulatorSources] = useState<EmulatorSourcesListing | null | undefined>(undefined);
   const [sourcesBusy, setSourcesBusy] = useState(false);
   const tenderFolder = useTenderFolder();
+  const esde = useEsdeSettings(selectedSection === "esde");
+  const loadEsdeSurface = esde.loadSurface;
 
   useEffect(() => {
     getSettings()
@@ -230,6 +235,7 @@ export const SettingsPage: FC<SettingsPageProps> = ({ onBack, section }) => {
         setPlatformGroups(!!s.collection_create_platform_groups);
         setNamingMode(s.collection_naming_mode ?? "merge");
         setQamPosition(s.qam_entry_position ?? "above_decky");
+        loadEsdeSurface(s.library_surface ?? "steam");
       })
       .catch((e) => {
         logError(`Failed to load settings: ${e}`);
@@ -251,7 +257,7 @@ export const SettingsPage: FC<SettingsPageProps> = ({ onBack, section }) => {
         }
       })
       .catch((e) => logError(`Failed to load save sync settings: ${e}`));
-  }, []);
+  }, [loadEsdeSurface]);
 
   function loadDevices() {
     setDevicesLoading(true);
@@ -757,6 +763,16 @@ export const SettingsPage: FC<SettingsPageProps> = ({ onBack, section }) => {
             onPlatformGroupsChange={handlePlatformGroupsChange}
             namingMode={namingMode}
             onNamingModeChange={handleNamingModeChange}
+          />
+        );
+      case "esde":
+        return (
+          <EsdeSection
+            surface={esde.surface}
+            onSurfaceChange={esde.changeSurface}
+            status={esde.status}
+            removal={esde.removal}
+            removing={esde.removing}
           />
         );
       case "emulator-sources":

@@ -108,6 +108,9 @@ _MIGRATION_RULE_WHITELIST: set[str] = {
     # it starts. Leaving ES-DE also removes Tender's own stand-ins from the ROM
     # folders: links no install record names, which a migration never moves.
     "set_library_surface",
+    # The ES-DE settings section's read — what ES-DE's scripts folder holds and
+    # RomM's config; it writes nothing.
+    "get_esde_status",
     # Preferred sibling-group region — a settings.json-only write (ADR-0021 §3),
     # never touches RetroDECK state; takes effect on the next sync. Its companion
     # read (distinct regions in the local library) is a pure local DB read.

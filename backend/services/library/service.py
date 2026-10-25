@@ -477,6 +477,10 @@ class LibraryService:
         async with self._rules.hold("clear_sync_cache", update=True, migration=True, prune=True):
             return self._reporter.clear_sync_cache()
 
+    async def revoke_every_skip(self) -> None:
+        """Implements ``services.protocols.LibrarySkipRevoker``."""
+        await self._config.loop.run_in_executor(None, self._reporter.revoke_every_skip)
+
     def get_sync_stats(self):
         return self._reporter.get_sync_stats()
 

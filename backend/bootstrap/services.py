@@ -43,6 +43,8 @@ from services.esde import (
     EsdeMediaServiceConfig,
     EsdeStandInService,
     EsdeStandInServiceConfig,
+    EsdeStatusService,
+    EsdeStatusServiceConfig,
 )
 from services.firmware import FirmwareService, FirmwareServiceConfig
 from services.firmware.store import FirmwareStore, FirmwareStoreConfig
@@ -179,6 +181,7 @@ class ServicesBundle:
     esde_gamelist_service: EsdeGamelistService
     esde_hook_script_service: EsdeHookScriptService
     esde_hook_service: EsdeHookService
+    esde_status_service: EsdeStatusService
 
 
 def wire_services(cfg: WiringConfig) -> ServicesBundle:
@@ -735,6 +738,7 @@ def wire_services(cfg: WiringConfig) -> ServicesBundle:
             steam_config=cfg.adapters.steam_config,
             conflict_rules=conflict_rules,
             surface_listeners=(esde_library_pass, esde_hook_script_service),
+            skip_revoker=sync_service,
         ),
     )
 
@@ -886,6 +890,17 @@ def wire_services(cfg: WiringConfig) -> ServicesBundle:
             loop=cfg.runtime.loop,
             logger=cfg.runtime.logger,
             log_debug=cfg.callbacks.log_debug,
+        ),
+    )
+
+    esde_status_service = EsdeStatusService(
+        config=EsdeStatusServiceConfig(
+            settings=cfg.stores.settings,
+            read_scripts=esde_hook_script_service.read_installed,
+            last_call=lambda: esde_hook_service.last_call,
+            romm_config=cfg.adapters.romm_api,
+            loop=cfg.runtime.loop,
+            logger=cfg.runtime.logger,
         ),
     )
 
@@ -1041,4 +1056,5 @@ def wire_services(cfg: WiringConfig) -> ServicesBundle:
         esde_gamelist_service=esde_gamelist_service,
         esde_hook_script_service=esde_hook_script_service,
         esde_hook_service=esde_hook_service,
+        esde_status_service=esde_status_service,
     )

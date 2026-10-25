@@ -36,6 +36,8 @@ import type { UpdatesSection } from "./settings/UpdatesSection";
 import type { LibrarySection } from "./settings/LibrarySection";
 import type { EmulatorSourcesSection } from "./settings/EmulatorSourcesSection";
 import type { InterfaceSection } from "./settings/InterfaceSection";
+import type { EsdeSection } from "./settings/EsdeSection";
+import { removeEveryTenderShortcut } from "../utils/removeAllShortcuts";
 import { getQamEntryPositionState, setQamEntryPositionState } from "../utils/qamEntryPositionStore";
 import { showPreferredRegionModal } from "./settings/PreferredRegionModal";
 
@@ -49,6 +51,7 @@ type UpdatesProps = ComponentProps<typeof UpdatesSection>;
 type LibraryProps = ComponentProps<typeof LibrarySection>;
 type EmulatorSourcesProps = ComponentProps<typeof EmulatorSourcesSection>;
 type InterfaceProps = ComponentProps<typeof InterfaceSection>;
+type EsdeProps = ComponentProps<typeof EsdeSection>;
 
 // Captured props arrays — reset in beforeEach. Each child mock pushes the
 // props it was called with so tests can inspect handler wiring + state
@@ -63,6 +66,7 @@ const capturedUpdates: UpdatesProps[] = [];
 const capturedLibrary: LibraryProps[] = [];
 const capturedSources: EmulatorSourcesProps[] = [];
 const capturedInterface: InterfaceProps[] = [];
+const capturedEsde: EsdeProps[] = [];
 
 vi.mock("./settings/ConnectionSection", () => ({
   ConnectionSection: (p: ConnectionProps) => {
@@ -112,6 +116,15 @@ vi.mock("./settings/InterfaceSection", () => ({
     return createElement("div", { "data-testid": "interface-section" });
   },
 }));
+vi.mock("./settings/EsdeSection", () => ({
+  EsdeSection: (p: EsdeProps) => {
+    capturedEsde.push(p);
+    return createElement("div", { "data-testid": "esde-section" });
+  },
+}));
+// The removal itself is `utils/removeAllShortcuts.ts`'s, which Data Management's
+// tests drive end to end; here the page is handed what it answers.
+vi.mock("../utils/removeAllShortcuts", () => ({ removeEveryTenderShortcut: vi.fn() }));
 vi.mock("./settings/UpdatesSection", () => ({
   UpdatesSection: (p: UpdatesProps) => {
     capturedUpdates.push(p);
@@ -244,6 +257,13 @@ const TWO_SOURCES: EmulatorSourcesListing = {
   ],
 };
 
+const ESDE_STATUS: import("../types").EsdeStatus = {
+  surface: "steam",
+  scripts: { known: true, folder: "/rd/ES-DE/scripts", installed: 0, expected: 4 },
+  last_call: null,
+  media_not_collected: { established: true, folders: ["videos"] },
+};
+
 const renderPage = () => render(<SettingsPage onBack={vi.fn()} section={openOn} />);
 
 describe("SettingsPage", () => {
@@ -261,12 +281,14 @@ describe("SettingsPage", () => {
     capturedLibrary.length = 0;
     capturedSources.length = 0;
     capturedInterface.length = 0;
+    capturedEsde.length = 0;
     setQamEntryPositionState("above_decky");
     // Defaults — many tests override per case.
     vi.mocked(backend.getSettings).mockResolvedValue(defaultSettings());
     vi.mocked(backend.getKnownRegions).mockResolvedValue([]);
     vi.mocked(backend.getEmulatorSources).mockResolvedValue(TWO_SOURCES);
     vi.mocked(backend.getTenderFolder).mockResolvedValue(TENDER_FOLDER_AT_HOME);
+    vi.mocked(backend.getEsdeStatus).mockResolvedValue(ESDE_STATUS);
     vi.mocked(showPreferredRegionModal).mockResolvedValue(true);
     vi.mocked(backend.getSaveSyncSettings).mockResolvedValue(defaultSaveSyncSettings());
     vi.mocked(backend.listDevices).mockResolvedValue({ success: true, devices: [] });
@@ -2043,6 +2065,181 @@ describe("SettingsPage", () => {
     });
   });
 
+  describe("ES-DE handlers", () => {
+    beforeEach(() => {
+      openOn = "esde";
+      vi.mocked(backend.setLibrarySurface).mockResolvedValue({ success: true });
+      vi.mocked(removeEveryTenderShortcut).mockResolvedValue({ kind: "removed", message: undefined, removedCount: 3 });
+    });
+
+    const lastEsde = () => capturedEsde[capturedEsde.length - 1]!;
+    const confirmOffered = () =>
+      vi
+        .mocked(showModal)
+        .mock.calls.map(([el]) => (el as ReactElement<{ strTitle?: string }>).props.strTitle)
+        .includes("Remove Tender's Steam shortcuts?");
+
+    /** Change the surface and let the save and the read behind it answer. */
+    const change = (surface: import("../types").LibrarySurface) =>
+      act(async () => {
+        lastEsde().onSurfaceChange(surface);
+        for (let i = 0; i < 5; i++) await Promise.resolve();
+      });
+
+    it("hydrates the surface from getSettings, steam where the key is absent", async () => {
+      vi.mocked(backend.getSettings).mockResolvedValue({ ...defaultSettings(), library_surface: "both" });
+      renderPage();
+      await flushAsync();
+      expect(lastEsde().surface).toBe("both");
+    });
+
+    it("reads settings without the key as Steam shortcuts", async () => {
+      renderPage();
+      await flushAsync();
+      expect(lastEsde().surface).toBe("steam");
+    });
+
+    it("reads the status once the section opens, and hands it down", async () => {
+      renderPage();
+      await flushAsync();
+      expect(vi.mocked(backend.getEsdeStatus)).toHaveBeenCalledTimes(1);
+      expect(lastEsde().status).toEqual(ESDE_STATUS);
+    });
+
+    it("reads no status while another section is open", async () => {
+      openOn = "connections";
+      renderPage();
+      await flushAsync();
+      expect(vi.mocked(backend.getEsdeStatus)).not.toHaveBeenCalled();
+    });
+
+    it("hands down a failed read as null and logs it", async () => {
+      const logSpy = vi.spyOn(backend, "logError");
+      vi.mocked(backend.getEsdeStatus).mockRejectedValue(new Error("boom"));
+      renderPage();
+      await flushAsync();
+      expect(lastEsde().status).toBeNull();
+      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("Failed to read the ES-DE status"));
+    });
+
+    it("persists a change and reads the status again", async () => {
+      renderPage();
+      await flushAsync();
+      await change("both");
+      expect(vi.mocked(backend.setLibrarySurface)).toHaveBeenCalledWith("both");
+      expect(lastEsde().surface).toBe("both");
+      expect(vi.mocked(backend.getEsdeStatus)).toHaveBeenCalledTimes(2);
+      expect(confirmOffered()).toBe(false);
+    });
+
+    it("puts the surface back when the save is refused, and offers nothing", async () => {
+      vi.mocked(backend.setLibrarySurface).mockResolvedValue({
+        success: false,
+        reason: "invalid_library_surface",
+        message: "Invalid library surface: esde",
+      });
+      renderPage();
+      await flushAsync();
+      await change("esde");
+      expect(lastEsde().surface).toBe("steam");
+      expect(confirmOffered()).toBe(false);
+    });
+
+    it("puts the surface back and logs when the save rejects", async () => {
+      const logSpy = vi.spyOn(backend, "logError");
+      vi.mocked(backend.setLibrarySurface).mockRejectedValue(new Error("boom"));
+      renderPage();
+      await flushAsync();
+      await change("esde");
+      expect(lastEsde().surface).toBe("steam");
+      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("Failed to save the library surface"));
+      expect(confirmOffered()).toBe(false);
+    });
+
+    it.each(["steam", "both"] as const)("the switch from %s to ES-DE offers to remove the shortcuts", async (from) => {
+      vi.mocked(backend.getSettings).mockResolvedValue({ ...defaultSettings(), library_surface: from });
+      renderPage();
+      await flushAsync();
+      await change("esde");
+      expect(confirmOffered()).toBe(true);
+      expect(removeEveryTenderShortcut).not.toHaveBeenCalled();
+    });
+
+    it("confirming runs the removal and says what it did", async () => {
+      renderPage();
+      await flushAsync();
+      await change("esde");
+      const props = lastConfirmModalProps<{ onOK?: () => void; strOKButtonText?: string }>();
+      expect(props?.strOKButtonText).toBe("Remove shortcuts");
+
+      await act(async () => {
+        props?.onOK?.();
+        for (let i = 0; i < 5; i++) await Promise.resolve();
+      });
+
+      expect(removeEveryTenderShortcut).toHaveBeenCalledWith("settings-esde", expect.any(Function));
+      expect(lastEsde().removal).toBe("All shortcuts removed");
+      expect(lastEsde().removing).toBe(false);
+      expect(lastEsde().surface).toBe("esde");
+    });
+
+    it("shows the removal's progress while it runs", async () => {
+      let finish!: (outcome: Awaited<ReturnType<typeof removeEveryTenderShortcut>>) => void;
+      vi.mocked(removeEveryTenderShortcut).mockImplementation((_owner, onProgress) => {
+        onProgress(2, 5);
+        return new Promise((resolve) => (finish = resolve));
+      });
+      renderPage();
+      await flushAsync();
+      await change("esde");
+      await act(async () => {
+        lastConfirmModalProps<{ onOK?: () => void }>()?.onOK?.();
+        await Promise.resolve();
+      });
+
+      expect(lastEsde().removing).toBe(true);
+      expect(lastEsde().removal).toBe("Removing shortcuts… 2 of 5");
+
+      await act(async () => {
+        finish({ kind: "failed", removedCount: 2 });
+        for (let i = 0; i < 3; i++) await Promise.resolve();
+      });
+      expect(lastEsde().removal).toBe("Failed to remove shortcuts");
+      expect(lastEsde().removing).toBe(false);
+    });
+
+    it("words a refused removal by the backend's message", async () => {
+      vi.mocked(removeEveryTenderShortcut).mockResolvedValue({ kind: "refused", message: "A sync is running." });
+      renderPage();
+      await flushAsync();
+      await change("esde");
+      await act(async () => {
+        lastConfirmModalProps<{ onOK?: () => void }>()?.onOK?.();
+        for (let i = 0; i < 5; i++) await Promise.resolve();
+      });
+      expect(lastEsde().removal).toBe("A sync is running.");
+    });
+
+    it("declining keeps the shortcuts", async () => {
+      renderPage();
+      await flushAsync();
+      await change("esde");
+      lastConfirmModalProps<{ onCancel?: () => void }>()?.onCancel?.();
+      await flushAsync();
+      expect(removeEveryTenderShortcut).not.toHaveBeenCalled();
+      expect(lastEsde().removal).toBe("");
+      expect(lastEsde().surface).toBe("esde");
+    });
+
+    it("the switch from ES-DE to both offers nothing", async () => {
+      vi.mocked(backend.getSettings).mockResolvedValue({ ...defaultSettings(), library_surface: "esde" });
+      renderPage();
+      await flushAsync();
+      await change("both");
+      expect(confirmOffered()).toBe(false);
+    });
+  });
+
   describe("Library handlers", () => {
     beforeEach(() => {
       openOn = "steam-library";
@@ -2234,7 +2431,7 @@ describe("SettingsPage", () => {
   });
 
   describe("the section list", () => {
-    it("shows exactly the nine sections, in order", async () => {
+    it("shows exactly the ten sections, in order", async () => {
       const { getAllByTestId } = renderPage();
       await flushAsync();
       const labels = getAllByTestId("field").map((el) => el.textContent);
@@ -2243,6 +2440,7 @@ describe("SettingsPage", () => {
         "Save Sync",
         "Controller",
         "Steam Library",
+        "ES-DE",
         "Emulator sources",
         "Tender folder",
         "Updates",
@@ -2320,6 +2518,7 @@ describe("SettingsPage", () => {
       ["save-sync", "savesync-section"],
       ["controller", "controller-section"],
       ["steam-library", "library-section"],
+      ["esde", "esde-section"],
       ["emulator-sources", "emulator-sources-section"],
       ["interface", "interface-section"],
       ["advanced", "advanced-section"],
@@ -2327,6 +2526,7 @@ describe("SettingsPage", () => {
       const { getByTestId, queryByTestId } = renderPage();
       await flushAsync();
       fireEvent.click(getByTestId(`settings-section-${section}`));
+      await flushAsync();
       expect(queryByTestId(testId)).not.toBeNull();
     });
 

@@ -15,6 +15,7 @@ import type {
   CollectionNamingMode,
   QamEntryPosition,
   LibrarySurface,
+  EsdeStatus,
   RegistryPlatform,
   FirmwareStatus,
   PlatformFirmwareStatus,
@@ -493,6 +494,7 @@ export const setLibrarySurface = endpoint<
   [LibrarySurface],
   { success: boolean; reason?: WireReason; message?: string }
 >("set_library_surface");
+export const getEsdeStatus = endpoint<[], EsdeStatus>("get_esde_status");
 export const getRegistryPlatforms = endpoint<[], { platforms: RegistryPlatform[] }>("get_registry_platforms");
 export const removePlatformShortcuts = endpoint<
   [string],

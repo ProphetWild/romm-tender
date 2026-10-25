@@ -2,7 +2,7 @@
  * Public surface for the frontend type catalog. This file is a façade —
  * actual type definitions live in domain modules (api, reasons, sync,
  * downloads, firmware, saves, achievements, migration, devices, emulator
- * sources, navigation).
+ * sources, ES-DE, navigation).
  * Consumers may deep-import the domain module directly
  * (`from "../types/saves"`) or use the broad re-export surface here
  * (`from "../types"`).
@@ -19,4 +19,5 @@ export * from "./migration";
 export * from "./devices";
 export * from "./emulatorSources";
 export * from "./tenderFolder";
+export * from "./esde";
 export * from "./navigation";

@@ -439,6 +439,10 @@ class Endpoints:
         return await self._services.settings_service.set_library_surface(surface)
 
     @route
+    async def get_esde_status(self):
+        return await self._services.esde_status_service.get_esde_status()
+
+    @route
     async def start_sync(self):
         return await self._services.sync_service.start_sync()
 

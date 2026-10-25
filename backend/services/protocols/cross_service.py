@@ -936,6 +936,16 @@ class LibrarySurfaceListener(Protocol):
     async def surface_stored(self, surface: LibrarySurface) -> None: ...
 
 
+class LibrarySkipRevoker(Protocol):
+    """Takes every platform's and collection's skip away, so the next library sync fetches each in full.
+
+    The settings ask it once the library surface stored writes ES-DE where the
+    one before did not. The composition root hands them ``LibraryService``.
+    """
+
+    async def revoke_every_skip(self) -> None: ...
+
+
 class EsdeOnDemandMedia(Protocol):
     """What ES-DE's ``game-select`` hook asks of the media Tender links into ES-DE.
 

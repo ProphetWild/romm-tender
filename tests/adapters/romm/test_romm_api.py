@@ -837,6 +837,126 @@ class TestDownloadMediaOverTheTransport:
         assert failing.call_count == 3
 
 
+class TestGetScanMedia:
+    """What RomM's server is set to collect, read off ``GET /api/config``."""
+
+    def test_it_answers_the_scan_media_list_in_one_short_attempt(self):
+        api, client = _make_api()
+        client.request_once.return_value = {"SCAN_MEDIA": ["box2d", "screenshot", "manual"], "EXCLUDED_PLATFORMS": []}
+
+        assert api.get_scan_media() == ("box2d", "screenshot", "manual")
+        client.request_once.assert_called_once_with("/api/config", timeout=3)
+        client.request.assert_not_called()
+
+    def test_an_empty_list_is_an_answer(self):
+        api, client = _make_api()
+        client.request_once.return_value = {"SCAN_MEDIA": []}
+
+        assert api.get_scan_media() == ()
+
+    @pytest.mark.parametrize(
+        "answer",
+        [
+            {},
+            {"SCAN_MEDIA": None},
+            {"SCAN_MEDIA": "box2d"},
+            {"SCAN_MEDIA": ["box2d", 3]},
+            ["box2d"],
+            None,
+        ],
+    )
+    def test_an_answer_without_a_list_of_names_raises_rather_than_answering_nothing(self, answer):
+        api, client = _make_api()
+        client.request_once.return_value = answer
+
+        with pytest.raises(RommApiError):
+            api.get_scan_media()
+
+    def test_a_failure_is_raised(self):
+        api, client = _make_api()
+        client.request_once.side_effect = RommServerError("HTTP 502")
+
+        with pytest.raises(RommServerError):
+            api.get_scan_media()
+
+
+class TestGetScanMediaOverTheTransport:
+    """The same read over the real transport, ``urlopen`` its only stand-in."""
+
+    @staticmethod
+    def _api(settings: dict[str, Any]) -> tuple[RommApiAdapter, RommHttpAdapter]:
+        http = RommHttpAdapter(settings, logging.getLogger("test"), "romm-tender/9.9.9", log_debug=lambda _msg: None)
+        return RommApiAdapter(http), http
+
+    @staticmethod
+    def _response(body: bytes) -> MagicMock:
+        resp = MagicMock()
+        resp.status = 200
+        resp.headers = {"Content-Type": "application/json"}
+        resp.read = io.BytesIO(body).read
+        resp.__enter__ = MagicMock(return_value=resp)
+        resp.__exit__ = MagicMock(return_value=False)
+        return resp
+
+    def test_it_asks_rom_m_s_config_route_with_the_configured_headers(self):
+        api, _http = self._api(
+            {
+                "romm_url": "http://romm.local/",
+                "romm_api_token": "rmm_secret",
+                "romm_api_token_origin": "http://romm.local",
+                "romm_custom_headers": [{"name": "P-Access-Token", "value": "tok"}],
+            }
+        )
+        body = b'{"SCAN_MEDIA": ["box2d", "logo", "video_normalized"]}'
+
+        with patch("urllib.request.urlopen", return_value=self._response(body)) as mock_open:
+            assert api.get_scan_media() == ("box2d", "logo", "video_normalized")
+
+        req = mock_open.call_args[0][0]
+        assert req.full_url == "http://romm.local/api/config"
+        assert req.get_method() == "GET"
+        assert req.get_header("P-access-token") == "tok"
+        assert mock_open.call_args.kwargs["timeout"] == 3
+
+    def test_an_answer_clears_what_an_earlier_failure_left(self):
+        api, http = self._api({"romm_url": "http://romm.local"})
+        failing = MagicMock(side_effect=RommConnectionError("refused"))
+        with patch("time.sleep"), pytest.raises(RommConnectionError):
+            http.with_retry(failing, base_delay=0)
+
+        with patch("urllib.request.urlopen", return_value=self._response(b'{"SCAN_MEDIA": []}')):
+            api.get_scan_media()
+
+        failing = MagicMock(side_effect=RommConnectionError("refused"))
+        with patch("time.sleep"), pytest.raises(RommConnectionError):
+            http.with_retry(failing, base_delay=0)
+        assert failing.call_count == 3
+
+    def test_a_server_that_cannot_be_reached_raises(self):
+        api, _http = self._api({"romm_url": "http://romm.local"})
+
+        with (
+            patch("urllib.request.urlopen", side_effect=ConnectionRefusedError("refused")),
+            pytest.raises(RommApiError),
+        ):
+            api.get_scan_media()
+
+    def test_a_body_that_is_not_json_raises(self):
+        api, _http = self._api({"romm_url": "http://romm.local"})
+
+        with (
+            patch("urllib.request.urlopen", return_value=self._response(b"<html>proxy</html>")),
+            pytest.raises(RommApiError),
+        ):
+            api.get_scan_media()
+
+    def test_no_server_configured_raises(self):
+        api, _http = self._api({"romm_url": ""})
+
+        with pytest.raises(RommApiError):
+            api.get_scan_media()
+
+
 class TestDownloadCoverFromUrl:
     def test_delegates_to_client_download_external(self):
         api, client = _make_api()

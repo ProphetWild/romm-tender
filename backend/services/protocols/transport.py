@@ -338,6 +338,18 @@ class RommMediaReader(Protocol):
         ...
 
 
+class RommServerConfigReader(Protocol):
+    """What RomM's server is configured to do, as its config route answers it."""
+
+    def get_scan_media(self) -> tuple[str, ...]:
+        """The media types RomM's server collects (``scan.media``), as RomM names them.
+
+        Raises ``RommApiError`` where the answer could not be read, never an
+        empty tuple in its place.
+        """
+        ...
+
+
 class RommSaveApi(Protocol):
     """RomM saves API surface (list, up/download, confirm, summary, delete)."""
 
@@ -541,6 +553,7 @@ class RommApi(
     RommFirmwareApi,
     RommPlaytimeApi,
     RommMediaReader,
+    RommServerConfigReader,
     Protocol,
 ):
     """Umbrella Protocol composing all per-domain RomM API Protocols."""

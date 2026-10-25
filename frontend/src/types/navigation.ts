@@ -15,6 +15,7 @@ export type SettingsSection =
   | "save-sync"
   | "controller"
   | "steam-library"
+  | "esde"
   | "emulator-sources"
   | "tender-folder"
   | "updates"

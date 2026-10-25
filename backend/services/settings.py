@@ -23,7 +23,7 @@ from domain.custom_headers import (
     resolve_custom_headers,
     stored_custom_headers,
 )
-from domain.library_surface import LIBRARY_SURFACES, library_surface
+from domain.library_surface import LIBRARY_SURFACES, library_surface, writes_esde
 from domain.sibling_resolution import AUTO_REGION
 from lib.errors import NotConfigured, Refused
 from lib.steam_input_apply import SteamInputApply
@@ -32,6 +32,7 @@ from lib.url_host import ENTERED_ADDRESS_WITH_USERINFO_MESSAGE, carries_userinfo
 if TYPE_CHECKING:
     from services.protocols import (
         ConflictRules,
+        LibrarySkipRevoker,
         LibrarySurfaceListener,
         SettingsPersister,
         SteamConfigStore,
@@ -104,8 +105,9 @@ class SettingsServiceConfig:
     infrastructure (logger, settings persister, steam-config adapter), and the
     ``ConflictRules`` the server-URL, custom-header and Steam Input writes check
     at their entry. Each of ``surface_listeners`` is told each library surface
-    stored, in their order. Bundled here so the ctor stays within the S107
-    parameter budget.
+    stored, in their order, and ``skip_revoker`` takes every skip away once the
+    surface stored writes ES-DE where the one before did not. Bundled here so
+    the ctor stays within the S107 parameter budget.
     """
 
     settings: dict[str, Any]
@@ -115,6 +117,7 @@ class SettingsServiceConfig:
     steam_config: SteamConfigStore
     conflict_rules: ConflictRules
     surface_listeners: tuple[LibrarySurfaceListener, ...] = ()
+    skip_revoker: LibrarySkipRevoker | None = None
 
 
 class SettingsService:
@@ -153,6 +156,7 @@ class SettingsService:
         self._steam_config = config.steam_config
         self._rules = config.conflict_rules
         self._surface_listeners = config.surface_listeners
+        self._skip_revoker = config.skip_revoker
 
     # ── Server connection settings ───────────────────────────────────────
 
@@ -454,14 +458,20 @@ class SettingsService:
 
         Takes effect from the next library sync. An unrecognised value from the
         untrusted frontend wire is refused with ``invalid_library_surface`` so a
-        bad call cannot corrupt the setting. Once persisted, each surface
-        listener is told the surface stored, the same one again included.
+        bad call cannot corrupt the setting. Once persisted, every skip is
+        revoked where the surface stored writes ES-DE and the one before did
+        not, since a platform the next sync skipped would hand the ES-DE pass
+        none of RomM's fields; then each surface listener is told the surface
+        stored, the same one again included.
         """
         if surface not in LIBRARY_SURFACES:
             raise Refused("invalid_library_surface", f"Invalid library surface: {surface}")
+        previous = library_surface(self._settings.get("library_surface"))
         stored = library_surface(surface)
         self._settings["library_surface"] = stored
         self._settings_persister.save_settings()
+        if self._skip_revoker is not None and writes_esde(stored) and not writes_esde(previous):
+            await self._skip_revoker.revoke_every_skip()
         for listener in self._surface_listeners:
             await listener.surface_stored(stored)
         return {"success": True}

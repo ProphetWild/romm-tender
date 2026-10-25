@@ -202,9 +202,9 @@ class EsdeGamelistIndexStore(Protocol):
 class EsdeHookScriptStore(Protocol):
     """Tender's event scripts in ES-DE's scripts folder; only a script carrying Tender's marker is replaced or removed.
 
-    Each answers whether it changed anything: ``install`` writes nothing where
-    anything else is at the path, and ``remove`` removes nothing there. Both
-    raise ``OSError`` where the change cannot be made.
+    ``install`` and ``remove`` answer whether they changed anything: ``install``
+    writes nothing where anything else is at the path, and ``remove`` removes
+    nothing there. Both raise ``OSError`` where the change cannot be made.
     """
 
     def install(self, path: str, text: str) -> bool:
@@ -213,6 +213,10 @@ class EsdeHookScriptStore(Protocol):
 
     def remove(self, path: str) -> bool:
         """Remove *path* if it is a script of Tender's."""
+        ...
+
+    def holds(self, path: str) -> bool:
+        """Whether a script of Tender's is at *path*; a link there is not one."""
         ...
 
 

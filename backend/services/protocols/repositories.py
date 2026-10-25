@@ -565,6 +565,14 @@ class PlatformSyncStateRepository(Protocol):
         """
         ...
 
+    def revoke_every_skip(self) -> None:
+        """Take away every stamp's skip authority, keeping each as ``revoke_skip`` keeps one.
+
+        Called once the library surface starts writing ES-DE, whose pass needs
+        every platform's ROMs (library/reporter.py).
+        """
+        ...
+
     def has_any(self) -> bool:
         """Return whether ANY platform currently carries a stamp that may authorise a skip.
 

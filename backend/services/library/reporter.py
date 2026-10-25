@@ -997,6 +997,13 @@ class SyncReporter:
         self._logger.info("Sync cache cleared — next sync will fully re-fetch and re-apply")
         return {"success": True, "message": "Next sync will fully re-fetch and re-apply"}
 
+    def revoke_every_skip(self) -> None:
+        """Revoke every platform stamp's skip, keeping the stamp; a collection stamp, having no revoked state, goes."""
+        with self._uow_factory() as uow:
+            uow.platform_sync_state.revoke_every_skip()
+            uow.collection_sync_state.clear()
+        self._logger.info("Every skip revoked — next sync will fully re-fetch")
+
     def get_sync_stats(self):
         enabled_platforms = self._settings.get("enabled_platforms", {})
         enabled_platform_count = sum(1 for v in enabled_platforms.values() if v)

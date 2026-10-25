@@ -32,7 +32,7 @@ class EsdeHookScriptsAdapter:
         renamed over the old one, so ES-DE never runs half a script. Raises
         ``OSError`` where it cannot be written.
         """
-        if os.path.lexists(path) and not self._is_tenders(path):
+        if os.path.lexists(path) and not self.holds(path):
             return False
         folder = os.path.dirname(path)
         os.makedirs(folder, exist_ok=True)
@@ -54,12 +54,12 @@ class EsdeHookScriptsAdapter:
 
         Raises ``OSError`` where it cannot be removed.
         """
-        if not self._is_tenders(path):
+        if not self.holds(path):
             return False
         os.unlink(path)
         return True
 
-    def _is_tenders(self, path: str) -> bool:
+    def holds(self, path: str) -> bool:
         """Whether *path* is a regular file, not followed if it is a link, that begins as a script of Tender's."""
         try:
             if not stat.S_ISREG(os.lstat(path).st_mode):
