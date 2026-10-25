@@ -310,6 +310,7 @@ IO_SEAM_METHODS: frozenset[str] = frozenset(
         "saves_root",
         "move_roots",
         "rom_folders",
+        "esde_folders",
         # The services' own wrappers around those questions, listed because they
         # are what the services call, as ``save_answer`` is for the save seam:
         # without them the rule would hold only where the question itself is
@@ -362,6 +363,17 @@ IO_SEAM_METHODS: frozenset[str] = frozenset(
         "acknowledge_server_head",
         "adopt_server_head",
         "record_server_head",
+        # RommMediaReader.download_media (services/protocols/transport.py) — a
+        # request to RomM streaming one media file into the cache root.
+        "download_media",
+        # EsdeMediaStore (services/protocols/files.py) — stats of a kept media
+        # copy, removal of a game's copies, and a walk of ES-DE's whole media
+        # tree. The store's other I/O is unlisted and that is a gap rather than
+        # a judgement: stage, head, discard, keep, forget, forget_all, link and
+        # unlink are names other classes write for other things.
+        "kept_size",
+        "forget_game",
+        "unlink_all",
     }
 )
 

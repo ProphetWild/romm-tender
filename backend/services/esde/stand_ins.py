@@ -12,7 +12,9 @@ What Tender decided for each game is kept in its record
 none, and the ROM's ``updated_at`` that decision was taken for, so an unchanged
 ROM is never asked about again. A run removes nothing before it ends, and only
 if it was not cancelled; then every stand-in of a game it no longer syncs goes,
-and nothing that is not a stand-in ever does.
+and nothing that is not a stand-in ever does. What a unit and a run's end
+leave ES-DE listing is answered, so that what is named after a game's entry —
+its media — follows it.
 
 A game whose download is in flight or queued gets no stand-in placed or put
 back until the download ends. Which games those are is read under the lock a
@@ -36,10 +38,13 @@ from typing import TYPE_CHECKING, Any
 from domain.emulator_sources import RETRODECK
 from domain.esde_stand_in import (
     OCCUPIED,
+    SettledRun,
     StandInRecord,
     SyncedScope,
+    install_entry,
     listing_settles_shape,
     predict_stand_in,
+    stand_in_entry,
     wanted_links,
 )
 from domain.library_surface import DEFAULT_LIBRARY_SURFACE, library_surface, writes_esde
@@ -50,7 +55,9 @@ if TYPE_CHECKING:
     import logging
     from collections.abc import Collection, Mapping
 
+    from domain.esde_stand_in import EsdeEntry
     from domain.library_surface import LibrarySurface
+    from domain.rom_install import RomInstall
     from domain.work_unit import WorkUnit
     from services.protocols import (
         ActiveDownloadRomIdsFn,
@@ -124,9 +131,10 @@ class _Decision:
 class EsdeStandInService:
     """Places and removes ES-DE's stand-ins for the library sync, and answers for one game.
 
-    Implements the ``EsdeStandInPass`` Protocol the sync holds, the
-    ``EsdeStandInGuard`` downloads, uninstalls, adoption and the game page hold,
-    and the ``LibrarySurfaceListener`` the settings tell.
+    The library sync reaches it through ``EsdeLibraryPass``, which hands what
+    each placement and each run's end answer on to the media named after them.
+    Implements the ``EsdeStandInGuard`` downloads, uninstalls, adoption and the
+    game page hold, and the ``LibrarySurfaceListener`` the pass tells in turn.
     """
 
     def __init__(self, *, config: EsdeStandInServiceConfig) -> None:
@@ -158,7 +166,7 @@ class EsdeStandInService:
         representative_ids: Collection[int],
         *,
         skipped: bool = False,
-    ) -> None:
+    ) -> list[EsdeEntry]:
         """Place a stand-in for each of *unit*'s *roms* among *representative_ids* that no download holds.
 
         *skipped* says the sync skipped *unit* as unchanged since its last
@@ -167,10 +175,15 @@ class EsdeStandInService:
         fails is logged and the rest go ahead. A game being downloaded has its
         stand-in recorded and not placed, and a run that ended or was abandoned
         while this unit was decided places nothing.
+
+        Answers the entry ES-DE lists each representative as: the stand-in
+        placed or already there, or what the game's download left. A
+        representative with neither — its path held by something else, a
+        download under way, a layout ES-DE lists as no one game — is left out.
         """
         run = self._run
         if not writes_esde(run.surface):
-            return
+            return []
         if skipped and unit.type == "platform":
             run.unchanged_platforms.add(unit.slug)
         elif skipped:
@@ -180,32 +193,37 @@ class EsdeStandInService:
         wanted = [rom for rom in roms if rom.get("id") in representative_ids]
         run.representatives.update(int(rom["id"]) for rom in wanted)
         if not wanted:
-            return
-        installed = await self._loop.run_in_executor(None, self._installed_rom_ids_io)
+            return []
+        installs = await self._loop.run_in_executor(None, self._installs_io)
         recorded = await self._loop.run_in_executor(None, self._index.read)
-        pending = [rom for rom in wanted if int(rom["id"]) not in installed]
+        pending = [rom for rom in wanted if int(rom["id"]) not in installs]
         decisions = await self._loop.run_in_executor(None, self._decide_io, pending, recorded)
         async with self._lock:
             if run is not self._run:
-                return
+                return []
             downloading = self._active_downloads()
-            folders = await self._loop.run_in_executor(None, self._place_io, decisions, downloading)
+            folders, entries = await self._loop.run_in_executor(None, self._place_io, decisions, downloading)
         if not skipped:
             run.swept_folders.update(folders)
+        held = [installs[int(rom["id"])] for rom in wanted if int(rom["id"]) in installs]
+        return entries + await self._loop.run_in_executor(None, self._install_entries_io, held)
 
-    async def settle(self) -> None:
+    async def settle(self) -> SettledRun | None:
         """End an apply run that was not cancelled: every stand-in of a game it no longer syncs goes.
 
         A game it syncs and a download holds loses its stand-in and keeps its
-        record. Ends the run, so a second call removes nothing.
+        record. Answers what the run synced and the entry each such game's
+        download left, or ``None`` for a run whose surface writes no ES-DE.
+        Ends the run, so a second call removes nothing and answers ``None``.
         """
         run, self._run = self._run, _Run()
         if not writes_esde(run.surface):
-            return
-        installed = await self._loop.run_in_executor(None, self._installed_rom_ids_io)
+            return None
+        installs = await self._loop.run_in_executor(None, self._installs_io)
         async with self._lock:
-            removed = await self._loop.run_in_executor(None, self._settle_io, run, installed)
+            removed, entries = await self._loop.run_in_executor(None, self._settle_io, run, installs)
         self._log_debug(f"[esde] the run's end removed {removed} stand-ins")
+        return SettledRun(scope=run.scope(), entries=tuple(entries))
 
     # ── One game ────────────────────────────────────────────────────
 
@@ -248,7 +266,7 @@ class EsdeStandInService:
                 return False
             if rom_id in self._active_downloads():
                 return False
-            if rom_id in await self._loop.run_in_executor(None, self._installed_rom_ids_io):
+            if rom_id in await self._loop.run_in_executor(None, self._installs_io):
                 return False
             return await self._loop.run_in_executor(None, self._restore_io, rom_id)
 
@@ -274,9 +292,23 @@ class EsdeStandInService:
 
     # ── Blocking work, run off the loop ─────────────────────────────
 
-    def _installed_rom_ids_io(self) -> frozenset[int]:
+    def _installs_io(self) -> dict[int, RomInstall]:
         with self._uow_factory() as uow:
-            return frozenset(install.rom_id for install in uow.rom_installs.iter_all())
+            return {install.rom_id: install for install in uow.rom_installs.iter_all()}
+
+    def _install_entries_io(self, installs: Collection[RomInstall]) -> list[EsdeEntry]:
+        """The entry each of *installs* left in its system's folder that ES-DE lists as one game."""
+        folders: dict[str, str | None] = {}
+        entries: list[EsdeEntry] = []
+        for install in installs:
+            if install.system not in folders:
+                folder = self._retrodeck_folders.download_folder(install.system)
+                folders[install.system] = None if isinstance(folder, FolderRefused) else folder
+            folder = folders[install.system]
+            entry = None if folder is None else install_entry(install, folder)
+            if entry is not None:
+                entries.append(entry)
+        return entries
 
     def _decide_io(self, roms: list[dict[str, Any]], recorded: Mapping[int, StandInRecord]) -> list[_Decision]:
         """Each of *roms*' stand-in, asked the download's way: its system, its folder, and the shape it takes there."""
@@ -338,10 +370,15 @@ class EsdeStandInService:
                 shape = None
         return StandInRecord(platform_slug=slug, system=system, updated_at=updated_at, path=path, shape=shape)
 
-    def _place_io(self, decisions: list[_Decision], downloading: Collection[int]) -> set[str]:
-        """Record *decisions* and place each stand-in they name but one *downloading*; answer every folder they name."""
+    def _place_io(self, decisions: list[_Decision], downloading: Collection[int]) -> tuple[set[str], list[EsdeEntry]]:
+        """Record *decisions* and place each stand-in they name but one *downloading*.
+
+        Answers every folder they name, and the entry of each stand-in that
+        stands now.
+        """
         index = self._index.read()
         folders: set[str] = set()
+        entries: list[EsdeEntry] = []
         for decision in decisions:
             earlier = index.get(decision.rom_id)
             if earlier is not None and earlier.path is not None:
@@ -360,15 +397,22 @@ class EsdeStandInService:
                 continue
             if outcome == OCCUPIED:
                 self._log_debug(f"[esde] no stand-in for ROM {decision.rom_id}: something else is at {path}")
+                continue
+            entry = stand_in_entry(decision.rom_id, decision.record)
+            if entry is not None:
+                entries.append(entry)
         self._write_io(index)
-        return folders
+        return folders, entries
 
-    def _settle_io(self, run: _Run, installed: frozenset[int]) -> int:
-        """Remove every stand-in the run does not keep, and keep the record of those it does; answer how many went."""
+    def _settle_io(self, run: _Run, installs: Mapping[int, RomInstall]) -> tuple[int, list[EsdeEntry]]:
+        """Remove every stand-in the run does not keep, and keep the record of those it does.
+
+        Answers how many went, and the entry each kept game a download holds left.
+        """
         index = self._index.read()
         scope = run.scope()
-        kept = {rom_id: record for rom_id, record in index.items() if scope.keeps(rom_id, record)}
-        wanted = wanted_links(kept, installed)
+        kept = {rom_id: record for rom_id, record in index.items() if scope.keeps(rom_id, record.platform_slug)}
+        wanted = wanted_links(kept, installs)
         removed = 0
         for rom_id, record in index.items():
             if record.path is not None and wanted.get(record.path) != rom_id:
@@ -382,7 +426,7 @@ class EsdeStandInService:
         for rom_id in sorted((set(index) | unrecorded) - set(kept)):
             self._remove_stub_io(rom_id)
         self._write_io(kept)
-        return removed
+        return removed, self._install_entries_io([installs[rom_id] for rom_id in kept if rom_id in installs])
 
     def _clear_io(self, rom_id: int) -> bool:
         record = self._index.read().get(rom_id)

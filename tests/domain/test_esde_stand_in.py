@@ -14,17 +14,21 @@ import pytest
 from domain.esde_stand_in import (
     FILE_SHAPE,
     FOLDER_SHAPE,
+    EsdeEntry,
     StandInRecord,
     StandInShape,
     SyncedScope,
     decode_index,
     encode_index,
+    install_entry,
     listing_settles_shape,
     predict_stand_in,
+    stand_in_entry,
     stand_in_rom_id,
     stand_in_root,
     wanted_links,
 )
+from domain.rom_install import RomInstall
 
 
 def _files(*entries: tuple[str, int]) -> list[dict[str, object]]:
@@ -286,30 +290,30 @@ def _scope(
     )
 
 
-class TestWhichStandInsARunKeeps:
+class TestWhichGamesARunKeeps:
     def test_a_representative_is_kept_wherever_it_lies(self):
         scope = _scope(representatives=frozenset({1}), read_platforms=frozenset({"gba"}))
 
-        assert scope.keeps(1, _record("gba"))
-        assert scope.keeps(1, _record("switched-off"))
+        assert scope.keeps(1, "gba")
+        assert scope.keeps(1, "switched-off")
 
     def test_a_game_the_run_read_its_platform_without_is_not_kept(self):
         # RomM no longer lists it, or a sibling is its group's representative now.
         scope = _scope(representatives=frozenset({2}), read_platforms=frozenset({"gba"}))
 
-        assert not scope.keeps(1, _record("gba"))
+        assert not scope.keeps(1, "gba")
 
     def test_a_game_whose_platform_no_unit_reached_is_not_kept(self):
-        assert not _scope(read_platforms=frozenset({"gba"})).keeps(1, _record("switched-off"))
+        assert not _scope(read_platforms=frozenset({"gba"})).keeps(1, "switched-off")
 
     def test_every_game_on_a_platform_skipped_as_unchanged_is_kept(self):
-        assert _scope(unchanged_platforms=frozenset({"gba"})).keeps(1, _record("gba"))
+        assert _scope(unchanged_platforms=frozenset({"gba"})).keeps(1, "gba")
 
     def test_a_skipped_collection_s_member_is_kept_on_a_platform_the_run_did_not_read(self):
         scope = _scope(unchanged_rom_ids=frozenset({1}), read_platforms=frozenset({"gba"}))
 
-        assert scope.keeps(1, _record("switched-off"))
-        assert not scope.keeps(1, _record("gba"))
+        assert scope.keeps(1, "switched-off")
+        assert not scope.keeps(1, "gba")
 
 
 class TestWantedLinks:
@@ -317,3 +321,68 @@ class TestWantedLinks:
         kept = {1: _record("gba", "/roms/gba/A.gba"), 2: _record("gba", "/roms/gba/B.gba"), 3: _record("ps3", None)}
 
         assert wanted_links(kept, installed={2}) == {"/roms/gba/A.gba": 1}
+
+
+def _install(file_path: str, rom_dir: str | None = None) -> RomInstall:
+    return RomInstall.mark_installed(
+        rom_id=7,
+        file_path=file_path,
+        rom_dir=rom_dir,
+        platform_slug="psx",
+        system="psx",
+        installed_at="2026-01-01T00:00:00+00:00",
+    )
+
+
+class TestTheEntryEsdeListsAGameAs:
+    def test_a_stand_in_is_its_own_entry(self):
+        record = StandInRecord(
+            platform_slug="psx",
+            system="psx",
+            updated_at=None,
+            path="/roms/psx/Game.m3u",
+            shape=StandInShape(name="Game.m3u", kind=FOLDER_SHAPE, launch_name="Game.m3u"),
+        )
+
+        assert stand_in_entry(7, record) == EsdeEntry(
+            rom_id=7, platform_slug="psx", system="psx", path="/roms/psx/Game.m3u", is_directory=True
+        )
+        assert stand_in_entry(7, _record("gba", "/roms/gba/Game.gba")) == EsdeEntry(
+            rom_id=7, platform_slug="gba", system="gba", path="/roms/gba/Game.gba", is_directory=False
+        )
+
+    def test_a_game_that_gets_no_stand_in_has_no_entry(self):
+        assert stand_in_entry(7, _record("ps3", None)) is None
+
+    def test_a_single_file_download_is_its_file(self):
+        entry = install_entry(_install("/roms/psx/Game.chd"), "/roms/psx")
+
+        assert entry == EsdeEntry(
+            rom_id=7, platform_slug="psx", system="psx", path="/roms/psx/Game.chd", is_directory=False
+        )
+
+    def test_a_collapsed_folder_is_the_folder_es_de_interprets_as_a_file(self):
+        install = _install("/roms/psx/Game.m3u/Game.m3u", rom_dir="/roms/psx/Game.m3u")
+
+        entry = install_entry(install, "/roms/psx/")
+
+        assert entry is not None
+        assert (entry.path, entry.is_directory) == ("/roms/psx/Game.m3u", True)
+
+    @pytest.mark.parametrize(
+        ("file_path", "rom_dir"),
+        [
+            # A folder whose launch file is not named after it is a folder of games to ES-DE.
+            ("/roms/psx/Game/Game (Disc 1).cue", "/roms/psx/Game"),
+            # A launch file below a subfolder of the game's folder.
+            ("/roms/psx/Game.m3u/disc/Game.m3u", "/roms/psx/Game.m3u"),
+            # A file below a subfolder of the system's folder.
+            ("/roms/psx/sub/Game.chd", None),
+            # A folder below a subfolder of the system's folder.
+            ("/roms/psx/sub/Game.m3u/Game.m3u", "/roms/psx/sub/Game.m3u"),
+            # Somewhere else altogether.
+            ("/elsewhere/Game.chd", None),
+        ],
+    )
+    def test_a_download_es_de_lists_as_no_one_game_there_has_no_entry(self, file_path, rom_dir):
+        assert install_entry(_install(file_path, rom_dir), "/roms/psx") is None

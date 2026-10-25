@@ -321,6 +321,23 @@ class RommRomReader(Protocol):
         ...
 
 
+class RommMediaReader(Protocol):
+    """RomM's media files — box art, screenshots, videos and the rest — fetched by the server path a ROM names."""
+
+    def download_media(
+        self, server_path: str, dest: str, *, etag: str | None = None, last_modified: str | None = None
+    ) -> CoverRevalidation | None:
+        """Fetch the file RomM serves at *server_path* into *dest*, revalidating with *etag* or *last_modified*.
+
+        *server_path* is as RomM names it, unencoded. A ``304`` leaves *dest*
+        untouched and answers ``not_modified=True``; either way the answer
+        carries the response's validators. ``None`` where RomM serves no file
+        there: a media file's 404 never says anything about the ROM, so it is
+        never ``RommNotFoundError``. Any other failure raises ``RommApiError``.
+        """
+        ...
+
+
 class RommSaveApi(Protocol):
     """RomM saves API surface (list, up/download, confirm, summary, delete)."""
 
@@ -523,6 +540,7 @@ class RommApi(
     RommAchievementsApi,
     RommFirmwareApi,
     RommPlaytimeApi,
+    RommMediaReader,
     Protocol,
 ):
     """Umbrella Protocol composing all per-domain RomM API Protocols."""

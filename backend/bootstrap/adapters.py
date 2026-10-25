@@ -31,6 +31,8 @@ from adapters.debug_logger import SettingsAwareDebugLogger
 from adapters.download_file import DownloadFileAdapter
 from adapters.emulator_sources import EmulatorSourcesAdapter
 from adapters.es_find_rules import EsFindRulesAdapter
+from adapters.esde_media_files import EsdeMediaFilesAdapter
+from adapters.esde_media_index import EsdeMediaIndexAdapter
 from adapters.esde_stand_in_index import EsdeStandInIndexAdapter
 from adapters.esde_stand_ins import EsdeStandInsAdapter
 from adapters.firmware_file import FirmwareFileAdapter
@@ -94,6 +96,8 @@ if TYPE_CHECKING:
         DirectoryFileListerFn,
         DownloadFileStore,
         EmulatorSourcesReader,
+        EsdeMediaIndexStore,
+        EsdeMediaStore,
         EsdeStandInIndexStore,
         EsdeStandInStore,
         EventEmitter,
@@ -210,6 +214,8 @@ class AdapterBundle:
     tender_logo: TenderLogoFn
     esde_stand_ins: EsdeStandInStore
     esde_stand_in_index: EsdeStandInIndexStore
+    esde_media_files: EsdeMediaStore
+    esde_media_index: EsdeMediaIndexStore
 
 
 @dataclass(frozen=True)
@@ -463,10 +469,13 @@ def bootstrap(
     update_failure = UpdateFailureFileAdapter(state_dir=directories.state_dir, log_debug=debug_logger)
     update_attempt = UpdateAttemptFileAdapter(state_dir=directories.state_dir, log_debug=debug_logger)
     update_staging = UpdateStagingAdapter(directory=os.path.join(directories.cache_dir, UPDATE_DIR_NAME))
-    # A stand-in's stub is re-derivable and lives in the cache root; the record
-    # of what Tender placed is not, and lives in the data root.
+    # A stand-in's stub and a media file's copy are re-derivable and live in the
+    # cache root; the records of what Tender placed and linked are not, and live
+    # in the data root.
     esde_stand_ins = EsdeStandInsAdapter(cache_dir=directories.cache_dir)
     esde_stand_in_index = EsdeStandInIndexAdapter(data_dir=directories.data_dir, logger=logger)
+    esde_media_files = EsdeMediaFilesAdapter(cache_dir=directories.cache_dir)
+    esde_media_index = EsdeMediaIndexAdapter(data_dir=directories.data_dir, logger=logger)
     transient_units = SystemdRunAdapter()
     journal = JournalctlAdapter(log_debug=debug_logger)
     game_process = GameProcessAdapter()
@@ -543,6 +552,8 @@ def bootstrap(
         tender_logo=icon_images.tender_logo,
         esde_stand_ins=esde_stand_ins,
         esde_stand_in_index=esde_stand_in_index,
+        esde_media_files=esde_media_files,
+        esde_media_index=esde_media_index,
     )
     stores = StateBundle(
         settings=settings,

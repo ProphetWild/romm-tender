@@ -21,7 +21,7 @@ from fakes.fake_retrodeck_folders import FakeRetroDeckFolders
 from fakes.fake_romm_api import FakeRommApi
 from fakes.fake_unit_of_work import FakeUnitOfWork, FakeUnitOfWorkFactory
 
-from domain.esde_stand_in import FILE_SHAPE, FOLDER_SHAPE, StandInRecord, StandInShape
+from domain.esde_stand_in import FILE_SHAPE, FOLDER_SHAPE, EsdeEntry, SettledRun, StandInRecord, StandInShape
 from domain.platform_system import NO_SYSTEM, PlatformSystem
 from domain.retrodeck_folders import switched_off
 from domain.rom import Rom
@@ -109,7 +109,7 @@ class Harness:
     # The games whose download is in flight or queued.
     active: set[int]
 
-    def install(self, rom_id: int, slug: str = "gba") -> None:
+    def install(self, rom_id: int, slug: str = "gba", *, file_path: str = "", rom_dir: str | None = None) -> None:
         with self.uow:
             self.uow.roms.save(
                 Rom.synced(
@@ -124,8 +124,8 @@ class Harness:
             self.uow.rom_installs.save(
                 RomInstall.mark_installed(
                     rom_id=rom_id,
-                    file_path=_gba_path(rom_id),
-                    rom_dir=None,
+                    file_path=file_path or _gba_path(rom_id),
+                    rom_dir=rom_dir,
                     platform_slug=slug,
                     system=slug,
                     installed_at="2026-01-01T00:00:00+00:00",
@@ -322,6 +322,87 @@ class TestPlacingAUnitsRepresentatives:
 
         assert list(h.store.links) == [_gba_path(2)]
         assert caplog.records
+
+
+def _entry(rom_id: int, path: str | None = None, *, system: str = "gba", is_directory: bool = False) -> EsdeEntry:
+    return EsdeEntry(
+        rom_id=rom_id, platform_slug=system, system=system, path=path or _gba_path(rom_id), is_directory=is_directory
+    )
+
+
+class TestWhatAPlacementAnswers:
+    async def test_each_stand_in_placed_or_already_there_and_nothing_else(self, h):
+        h.store.others.add(_gba_path(3))
+        h.active.add(4)
+        roms = [_file_rom(1), _file_rom(2), _file_rom(3), _file_rom(4)]
+        h.service.begin_run("esde")
+
+        first = await h.service.place(_platform("gba"), roms, {1, 3, 4})
+        again = await h.service.place(_platform("gba"), roms, {1, 3, 4})
+
+        assert first == [_entry(1)]
+        assert again == [_entry(1)]
+
+    async def test_a_folder_stand_in_is_answered_as_a_folder(self, h):
+        rom = _disc_rom(3)
+        h.romm_api.roms[3] = _disc_detail(rom)
+        h.service.begin_run("esde")
+
+        entries = await h.service.place(_platform("psx"), [rom], {3})
+
+        assert entries == [_entry(3, f"{_ROMS}/psx/Disc 3.m3u", system="psx", is_directory=True)]
+
+    async def test_an_installed_representative_is_answered_as_its_download_left_it(self, h):
+        h.install(5)
+        h.install(6, file_path=f"{_ROMS}/gba/Game 6.m3u/Game 6.m3u", rom_dir=f"{_ROMS}/gba/Game 6.m3u")
+        h.service.begin_run("esde")
+
+        entries = await h.service.place(_platform("gba"), [_file_rom(5), _file_rom(6)], {5, 6})
+
+        assert sorted(entries, key=lambda entry: entry.rom_id) == [
+            _entry(5),
+            _entry(6, f"{_ROMS}/gba/Game 6.m3u", is_directory=True),
+        ]
+
+    async def test_a_download_es_de_lists_as_no_one_game_is_not_answered(self, h):
+        h.install(5, file_path=f"{_ROMS}/gba/sub/Game 5.gba")
+        h.service.begin_run("esde")
+
+        assert await h.service.place(_platform("gba"), [_file_rom(5)], {5}) == []
+
+    async def test_an_installed_game_in_a_folder_retrodeck_refuses_is_not_answered(self, h):
+        h.install(5)
+        h.folders.download_refusal = switched_off("Downloads")
+        h.service.begin_run("esde")
+
+        assert await h.service.place(_platform("gba"), [_file_rom(5)], {5}) == []
+
+    async def test_a_surface_that_writes_no_esde_answers_nothing(self, h):
+        h.service.begin_run("steam")
+
+        assert await h.service.place(_platform("gba"), [_file_rom(1)], {1}) == []
+        assert await h.service.settle() is None
+
+
+class TestWhatARunsEndAnswers:
+    async def test_what_the_run_synced_and_where_a_download_now_holds_a_kept_game(self, h):
+        await _run(h, (_platform("gba"), [_file_rom(1), _file_rom(2)], None))
+        h.install(1, file_path=f"{_ROMS}/gba/Game 1.m3u/Game 1.m3u", rom_dir=f"{_ROMS}/gba/Game 1.m3u")
+        h.service.begin_run("esde")
+        await h.service.place(_platform("gba"), [_file_rom(1), _file_rom(2)], {1, 2})
+
+        settled = await h.service.settle()
+
+        assert isinstance(settled, SettledRun)
+        assert settled.entries == (_entry(1, f"{_ROMS}/gba/Game 1.m3u", is_directory=True),)
+        assert settled.scope.keeps(2, "gba")
+        assert not settled.scope.keeps(3, "gba")
+
+    async def test_once_settled_the_run_answers_no_end_again(self, h):
+        h.service.begin_run("esde")
+        assert await h.service.settle() is not None
+
+        assert await h.service.settle() is None
 
 
 class TestARunsEnd:

@@ -136,6 +136,11 @@ class FakeRommApi:
         # a 304; otherwise a 200 that returns these as the fresh validators.
         self.cover_etags: dict[str, str] = {}
         self.cover_last_modified: dict[str, str] = {}
+        # ES-DE media RomM serves, by the server path a ROM names it with; a path
+        # not here answers as RomM's static mount does for a missing file. Its
+        # ETag, keyed as a cover's is, makes a conditional fetch answer 304.
+        self.media_files: dict[str, bytes] = {}
+        self.media_etags: dict[str, str] = {}
 
         # Failure-injection seams.
         self._fail_on_next: Exception | None = None
@@ -167,6 +172,8 @@ class FakeRommApi:
         self.download_range_supported: bool = False
         self.download_cover_side_effect: Exception | None = None
         self.download_cover_from_url_side_effect: Exception | None = None
+        # Raised by ``download_media`` for one server path alone.
+        self.download_media_side_effects: dict[str, Exception] = {}
         self.get_current_user_side_effect: Exception | None = None
         self.ingest_play_sessions_side_effect: Exception | None = None
         self.list_play_sessions_side_effect: Exception | None = None
@@ -538,6 +545,24 @@ class FakeRommApi:
         key = f"cover_url:{url}"
         payload = self.download_payloads.get(key, b"")
         self._materialize_download(dest, payload)
+
+    def download_media(
+        self, server_path: str, dest: str, *, etag: str | None = None, last_modified: str | None = None
+    ) -> CoverRevalidation | None:
+        self._log("download_media", (server_path, dest), {"etag": etag, "last_modified": last_modified})
+        self._check_fail(self.download_media_side_effects.get(server_path))
+        payload = self.media_files.get(server_path)
+        if payload is None:
+            return None
+        server_etag = self.media_etags.get(_strip_cover_ts(server_path))
+        if etag is not None and etag == server_etag:
+            return CoverRevalidation(not_modified=True, etag=server_etag, last_modified=None)
+        self._materialize_download(dest, payload)
+        return CoverRevalidation(not_modified=False, etag=server_etag, last_modified=None)
+
+    def media_requests(self) -> list[str]:
+        """The server path of every media fetch asked for, in order."""
+        return [args[0] for name, args, _kwargs in self.call_log if name == "download_media"]
 
     # ------------------------------------------------------------------
     # RommFirmwareApi

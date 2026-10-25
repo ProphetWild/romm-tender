@@ -4,7 +4,7 @@ Each Protocol owns the raw POSIX-style file operations one service
 needs against one logical subtree (cover art, ROM downloads, the
 launcher download queue, firmware/BIOS files, RetroDECK migration
 flows, installed ROMs, save files, SteamGridDB artwork cache, ES-DE's
-stand-ins).
+stand-ins and media).
 Implementations live in adapters; services see only the I/O seams.
 
 Implementations are synchronous — services that call from an async
@@ -16,9 +16,11 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping
+    from collections.abc import Callable, Mapping, Sequence
     from contextlib import AbstractContextManager
 
+    from domain.esde_media import MediaFolder
+    from domain.esde_media_record import GameMedia, LinkOutcome
     from domain.esde_stand_in import PlaceOutcome, StandInRecord, StandInShape
     from domain.firmware_places import PlaceLook
     from domain.prune import BundleReadmeContext
@@ -81,6 +83,91 @@ class EsdeStandInIndexStore(Protocol):
     def read(self) -> dict[int, StandInRecord]: ...
 
     def write(self, index: Mapping[int, StandInRecord]) -> None: ...
+
+
+class EsdeMediaStore(Protocol):
+    """Tender's copies of RomM's media for ES-DE below the cache root, and the links ES-DE's media tree gets to them.
+
+    A copy is kept per game and media folder, apart for a folder fetched on
+    selection (*on_demand*). A link is Tender's exactly when its target lies
+    below ``<cache>/esde/``, and only such a link is ever replaced or removed,
+    each re-read without being followed right before; anything else at a name
+    ES-DE reads for a game and folder holds that slot and is never touched.
+    The writers raise ``OSError`` where the change cannot be made; the readers
+    answer nothing, never raising, where nothing is there.
+    """
+
+    def stage(self, rom_id: int, folder: MediaFolder, *, on_demand: bool) -> str:
+        """A path to fetch *rom_id*'s *folder* file into, beside where its copy is kept."""
+        ...
+
+    def head(self, path: str) -> bytes:
+        """The first bytes of the file at *path*, as many as telling its format needs."""
+        ...
+
+    def discard(self, path: str) -> None:
+        """Remove the staged file at *path*; one not there, or that cannot be removed, is left."""
+        ...
+
+    def keep(self, staged: str, rom_id: int, folder: MediaFolder, extension: str, *, on_demand: bool) -> int:
+        """Keep *staged* as *rom_id*'s *folder* copy with *extension*, in place of any kept before; its size."""
+        ...
+
+    def kept_size(self, rom_id: int, folder: MediaFolder, extension: str, *, on_demand: bool) -> int | None:
+        """The size of *rom_id*'s *folder* copy kept with *extension*, or ``None`` where none is."""
+        ...
+
+    def forget(self, rom_id: int, folder: MediaFolder, *, on_demand: bool) -> None:
+        """Remove *rom_id*'s kept *folder* copy, under any extension."""
+        ...
+
+    def forget_game(self, rom_id: int) -> None:
+        """Remove every copy kept for *rom_id*."""
+        ...
+
+    def forget_all(self) -> None:
+        """Remove every copy kept for any game."""
+        ...
+
+    def link(
+        self,
+        rom_id: int,
+        folder: MediaFolder,
+        extension: str,
+        *,
+        on_demand: bool,
+        link_path: str,
+        names: Sequence[str],
+    ) -> LinkOutcome:
+        """Link *link_path* to *rom_id*'s kept *folder* copy, unless something not Tender's holds one of *names*.
+
+        *names* are every path ES-DE reads for that game and folder,
+        *link_path* among them. Where one is held nothing is linked and every
+        link of Tender's among them goes; otherwise Tender's links at the other
+        names go once this one stands.
+        """
+        ...
+
+    def unlink(self, rom_id: int, link_path: str) -> bool:
+        """Remove the link at *link_path* if it is Tender's link to one of *rom_id*'s copies; whether it went."""
+        ...
+
+    def unlink_all(self, media_root: str) -> int:
+        """Remove every link of Tender's below *media_root*; how many went."""
+        ...
+
+
+class EsdeMediaIndexStore(Protocol):
+    """The record of the media Tender linked into ES-DE; what goes into it is the media service's alone.
+
+    ``read`` answers an empty record where there is none or it cannot be read,
+    and never raises; ``write`` replaces it whole and raises ``OSError`` where
+    it could not be written.
+    """
+
+    def read(self) -> dict[int, GameMedia]: ...
+
+    def write(self, index: Mapping[int, GameMedia]) -> None: ...
 
 
 class UpdateStagingStore(Protocol):

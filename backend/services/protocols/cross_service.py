@@ -869,13 +869,15 @@ class RendererAboveCeilingProvider(Protocol):
 
 
 class EsdeStandInPass(Protocol):
-    """What a library sync's apply run hands the ES-DE stand-in pass: its surface, each unit, and its end.
+    """What a library sync's apply run hands the ES-DE pass — stand-ins and media: its surface, each unit, its end.
 
     ``begin_run`` names the library surface the run syncs to; the pass places
     and removes nothing unless that surface writes ES-DE. ``place`` is handed a
     unit once its rows are committed, or once it was skipped as unchanged, with
     the ids of the ROMs the sync gives shortcuts among its ROMs. ``settle`` ends
     a run that was not cancelled; a run that ends without it removes nothing.
+    What the pass fetches it fetches in the background, so neither call waits
+    on it.
     """
 
     def begin_run(self, surface: LibrarySurface) -> None: ...
@@ -923,11 +925,28 @@ class EsdeStandInGuard(Protocol):
 class LibrarySurfaceListener(Protocol):
     """What is told each time the library surface setting is stored, after it is persisted.
 
-    The composition root satisfies this with ``EsdeStandInService``, which
-    removes every stand-in once the surface stored writes no ES-DE.
+    The composition root satisfies this with ``EsdeLibraryPass``, which
+    removes every stand-in and every media link once the surface stored writes
+    no ES-DE.
     """
 
     async def surface_stored(self, surface: LibrarySurface) -> None: ...
+
+
+class EsdeOnDemandMedia(Protocol):
+    """What ES-DE's ``game-select`` hook asks of the media Tender links into ES-DE.
+
+    The composition root satisfies this with ``EsdeMediaService``.
+    """
+
+    def fetch_on_selection(self, rom_id: int) -> None:
+        """Fetch and link *rom_id*'s video and manual in the background, and answer at once.
+
+        Does nothing while the library surface writes no ES-DE, for a game no
+        sync recorded media for, and for a selection of a game whose fetch is
+        still under way.
+        """
+        ...
 
 
 class ShortcutArtworkJob(Protocol):

@@ -215,6 +215,22 @@ class RommApiAdapter:
     def download_cover_from_url(self, url: str, dest: str) -> None:
         self._client.download_external(url, dest)
 
+    def download_media(
+        self, server_path: str, dest: str, *, etag: str | None = None, last_modified: str | None = None
+    ) -> CoverRevalidation | None:
+        """Fetch the media file RomM serves at *server_path* into *dest*, or revalidate it; ``None`` for a 404.
+
+        The cover's own fetch, so the path is encoded, the configured headers
+        go with it and a validator makes it conditional as a cover's are. Its
+        404 is the byte stream's — RomM's static mount holds no such file — and
+        says nothing about the ROM, so it is answered as no file rather than
+        raised as the entity verdict ``RommNotFoundError`` is read as.
+        """
+        try:
+            return self._client.download_conditional(server_path, dest, etag=etag, last_modified=last_modified)
+        except RommNotFoundError:
+            return None
+
     # ── Collections ───────────────────────────────────────────────────
 
     def list_collections(self) -> list[dict[str, Any]]:

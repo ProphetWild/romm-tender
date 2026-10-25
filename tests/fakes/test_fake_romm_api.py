@@ -16,6 +16,7 @@ from services.protocols.transport import (
     RommDeviceApi,
     RommFirmwareApi,
     RommLibraryApi,
+    RommMediaReader,
     RommPlatformReader,
     RommPlaytimeApi,
     RommRomReader,
@@ -296,6 +297,47 @@ class TestClientTokens:
             api.mint_client_token("u", "p", token_name="x")
 
 
+class TestMediaFiles:
+    """``download_media`` serves the files seeded by server path, and answers ``None`` for any other."""
+
+    def test_a_seeded_file_is_written_with_its_etag(self, tmp_path) -> None:
+        api = FakeRommApi()
+        api.media_files["/m/box.png?ts=1"] = b"PNG"
+        api.media_etags["/m/box.png"] = '"e"'
+        dest = tmp_path / "box.part"
+
+        answer = api.download_media("/m/box.png?ts=1", str(dest))
+
+        assert answer is not None
+        assert (answer.not_modified, answer.etag) == (False, '"e"')
+        assert dest.read_bytes() == b"PNG"
+        assert api.media_requests() == ["/m/box.png?ts=1"]
+
+    def test_its_own_etag_answers_not_modified_and_writes_nothing(self, tmp_path) -> None:
+        api = FakeRommApi()
+        api.media_files["/m/box.png?ts=2"] = b"PNG"
+        api.media_etags["/m/box.png"] = '"e"'
+        dest = tmp_path / "box.part"
+
+        answer = api.download_media("/m/box.png?ts=2", str(dest), etag='"e"')
+
+        assert answer is not None
+        assert answer.not_modified is True
+        assert not dest.exists()
+
+    def test_a_file_not_seeded_answers_none(self, tmp_path) -> None:
+        assert FakeRommApi().download_media("/m/none.png", str(tmp_path / "x")) is None
+
+    def test_a_failure_for_one_path_is_raised_for_it_alone(self, tmp_path) -> None:
+        api = FakeRommApi()
+        api.media_files["/m/a.png"] = b"A"
+        api.download_media_side_effects["/m/b.png"] = OSError("reset")
+
+        with pytest.raises(OSError, match="reset"):
+            api.download_media("/m/b.png", str(tmp_path / "b"))
+        assert api.download_media("/m/a.png", str(tmp_path / "a")) is not None
+
+
 class TestProtocolSatisfaction:
     """``FakeRommApi`` structurally satisfies every RomM Protocol.
 
@@ -320,6 +362,7 @@ class TestProtocolSatisfaction:
             RommLibraryApi,
             RommSyncApi,
             RommTokenApi,
+            RommMediaReader,
         ],
     )
     def test_implements_every_protocol_member(self, protocol) -> None:

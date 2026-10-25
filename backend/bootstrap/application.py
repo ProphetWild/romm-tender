@@ -84,6 +84,7 @@ class Application:
         await services.shortcut_artwork_service.shutdown()
         await services.update_install_service.shutdown()
         await services.sync_service.shutdown()
+        await services.esde_media_service.shutdown()
         await services.prune_service.shutdown()
         await services.download_service.shutdown()
         await services.migration_service.shutdown()

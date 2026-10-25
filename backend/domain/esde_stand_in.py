@@ -15,8 +15,10 @@ ES-DE would not list as one game, there is no stand-in. A single zip RomM lists
 no members for is predicted as the zip itself, the one prediction that may
 miss (docs/specs/esde-library.md, D5).
 
-The record of what Tender placed, ``<data>/esde/index.json``, is encoded and
-decoded here too.
+The entry ES-DE lists a game as — its stand-in, or what its download left —
+is what the game's media are named after (``domain/esde_media.py``), and is
+read here too. The record of what Tender placed, ``<data>/esde/index.json``, is
+encoded and decoded here as well.
 
 Pure compute — no I/O, no state mutation.
 """
@@ -46,6 +48,8 @@ from domain.served_shape import holds_disc_image, is_zip_name, listed_members, u
 
 if TYPE_CHECKING:
     from collections.abc import Collection, Mapping
+
+    from domain.rom_install import RomInstall
 
 _STAND_IN_FOLDER = ("esde", "stand-ins")
 
@@ -111,8 +115,8 @@ class SyncedScope:
     unchanged_platforms: frozenset[str]
     unchanged_rom_ids: frozenset[int]
 
-    def keeps(self, rom_id: int, record: StandInRecord) -> bool:
-        """Whether the game *record* is Tender's decision for is one the run still syncs.
+    def keeps(self, rom_id: int, platform_slug: str) -> bool:
+        """Whether the game *rom_id*, on the platform *platform_slug*, is one the run still syncs.
 
         A representative is. So is a game on a platform skipped as unchanged,
         whose skip hands back only the ROMs bound to shortcuts, and a member of a
@@ -122,9 +126,35 @@ class SyncedScope:
         its group's representative; any other game elsewhere is on a platform
         no longer synced.
         """
-        if rom_id in self.representatives or record.platform_slug in self.unchanged_platforms:
+        if rom_id in self.representatives or platform_slug in self.unchanged_platforms:
             return True
-        return rom_id in self.unchanged_rom_ids and record.platform_slug not in self.read_platforms
+        return rom_id in self.unchanged_rom_ids and platform_slug not in self.read_platforms
+
+
+@dataclass(frozen=True, slots=True)
+class EsdeEntry:
+    """What ES-DE lists one game as, directly in its system's folder: its stand-in, or what its download left.
+
+    *is_directory* says *path* is a folder ES-DE interprets as a file.
+    """
+
+    rom_id: int
+    platform_slug: str
+    system: str
+    path: str
+    is_directory: bool
+
+
+@dataclass(frozen=True, slots=True)
+class SettledRun:
+    """What the end of an apply run that was not cancelled kept, and the entries a download holds that it kept.
+
+    *entries* are those of the games it kept that have a stand-in recorded and
+    are downloaded now, each as its download left it.
+    """
+
+    scope: SyncedScope
+    entries: tuple[EsdeEntry, ...]
 
 
 def wanted_links(kept: Mapping[int, StandInRecord], installed: Collection[int]) -> dict[str, int]:
@@ -132,6 +162,46 @@ def wanted_links(kept: Mapping[int, StandInRecord], installed: Collection[int]) 
     return {
         record.path: rom_id for rom_id, record in kept.items() if record.path is not None and rom_id not in installed
     }
+
+
+def stand_in_entry(rom_id: int, record: StandInRecord) -> EsdeEntry | None:
+    """The entry *rom_id*'s stand-in, as *record* decides it, is listed as; ``None`` where it gets none."""
+    if record.path is None or record.shape is None:
+        return None
+    return EsdeEntry(
+        rom_id=rom_id,
+        platform_slug=record.platform_slug,
+        system=record.system,
+        path=record.path,
+        is_directory=record.shape.kind == FOLDER_SHAPE,
+    )
+
+
+def install_entry(install: RomInstall, folder: str) -> EsdeEntry | None:
+    """The entry *install* left in its system's *folder* that ES-DE lists as one game; ``None`` where it left none.
+
+    A single file directly in *folder* is listed as itself. A folder directly in
+    *folder* is listed as one game only where the file it launches lies
+    directly inside it under the folder's own name, ES-DE's directory
+    interpreted as a file; any other folder ES-DE lists as a folder of games.
+    """
+    folder = os.path.normpath(folder)
+    file_path = os.path.normpath(install.file_path)
+    if install.rom_dir is None:
+        path, is_directory = file_path, False
+    else:
+        path, is_directory = os.path.normpath(install.rom_dir), True
+        if file_path != os.path.join(path, os.path.basename(path)):
+            return None
+    if os.path.dirname(path) != folder:
+        return None
+    return EsdeEntry(
+        rom_id=install.rom_id,
+        platform_slug=install.platform_slug,
+        system=install.system,
+        path=path,
+        is_directory=is_directory,
+    )
 
 
 def stand_in_root(cache_dir: str) -> str:

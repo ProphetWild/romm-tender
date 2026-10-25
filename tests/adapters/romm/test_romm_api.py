@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-from unittest.mock import MagicMock
+import http.client as http_client
+import io
+import logging
+import urllib.error
+from typing import TYPE_CHECKING, Any
+from unittest.mock import MagicMock, patch
 
 import pytest
 
+from adapters.romm.http import RommHttpAdapter
 from adapters.romm.romm_api import _TOKEN_SCOPES, RommApiAdapter
 from lib.errors import (
     PairingCodeInvalidError,
@@ -14,6 +19,7 @@ from lib.errors import (
     PairingCodeRateLimitedError,
     PairingCodeTokenGoneError,
     RommApiError,
+    RommConnectionError,
     RommForbiddenError,
     RommNotFoundError,
     RommServerError,
@@ -21,6 +27,7 @@ from lib.errors import (
     RommUnprocessableEntityError,
     classify_error,
 )
+from models.cover import CoverRevalidation
 
 if TYPE_CHECKING:
     from models.play_sessions import PlaySessionIngestEntry
@@ -738,6 +745,96 @@ class TestDownloadCover:
         client.download_conditional.assert_called_once_with(
             "/c.png", "/tmp/c.png", etag='"abc"', last_modified="Wed, 01 Jan 2025 00:00:00 GMT"
         )
+
+
+class TestDownloadMedia:
+    """A media file for ES-DE comes through the cover's own byte-stream fetch."""
+
+    _PATH = "/assets/romm/resources/roms/1/10/box3d/box 3d.png?ts=2026-01-01 00:00:00"
+
+    def test_it_goes_through_the_conditional_byte_stream_fetch_with_the_server_path_as_given(self):
+        api, client = _make_api()
+        answer = CoverRevalidation(not_modified=False, etag='"e"', last_modified=None)
+        client.download_conditional = MagicMock(return_value=answer)
+
+        result = api.download_media(self._PATH, "/tmp/m.part", etag='"old"', last_modified="Wed, 01 Jan 2025")
+
+        assert result is answer
+        client.download_conditional.assert_called_once_with(
+            self._PATH, "/tmp/m.part", etag='"old"', last_modified="Wed, 01 Jan 2025"
+        )
+
+    def test_a_file_rom_m_does_not_serve_answers_none_never_not_found(self):
+        api, client = _make_api()
+        client.download_conditional = MagicMock(side_effect=RommNotFoundError("HTTP 404: Not Found"))
+
+        assert api.download_media(self._PATH, "/tmp/m.part") is None
+
+    def test_any_other_failure_is_raised(self):
+        api, client = _make_api()
+        client.download_conditional = MagicMock(side_effect=RommServerError("HTTP 502"))
+
+        with pytest.raises(RommServerError):
+            api.download_media(self._PATH, "/tmp/m.part")
+
+
+class TestDownloadMediaOverTheTransport:
+    """The same fetch over the real transport, ``urlopen`` its only stand-in."""
+
+    _PATH = "/assets/romm/resources/roms/1/10/box3d/box 3d.png?ts=2026-01-01 00:00:00"
+
+    @staticmethod
+    def _api(settings: dict[str, Any]) -> tuple[RommApiAdapter, RommHttpAdapter]:
+        http = RommHttpAdapter(settings, logging.getLogger("test"), "romm-tender/9.9.9", log_debug=lambda _msg: None)
+        return RommApiAdapter(http), http
+
+    @staticmethod
+    def _response(body: bytes) -> MagicMock:
+        resp = MagicMock()
+        resp.status = 200
+        resp.headers = {"Content-Length": str(len(body)), "ETag": '"v1"'}
+        resp.fp = None
+        resp.read = io.BytesIO(body).read
+        resp.__enter__ = MagicMock(return_value=resp)
+        resp.__exit__ = MagicMock(return_value=False)
+        return resp
+
+    def test_the_path_is_encoded_as_a_cover_s_is_and_the_configured_headers_go_with_it(self, tmp_path):
+        api, _http = self._api(
+            {
+                "romm_url": "http://romm.local",
+                "romm_api_token": "rmm_secret",
+                "romm_api_token_origin": "http://romm.local",
+                "romm_custom_headers": [{"name": "P-Access-Token", "value": "tok"}],
+            }
+        )
+        dest = tmp_path / "m.part"
+
+        with patch("urllib.request.urlopen", return_value=self._response(b"BYTES")) as mock_open:
+            result = api.download_media(self._PATH, str(dest))
+
+        req = mock_open.call_args[0][0]
+        assert req.full_url == (
+            "http://romm.local/assets/romm/resources/roms/1/10/box3d/box%203d.png?ts=2026-01-01%2000:00:00"
+        )
+        assert req.get_header("Authorization") == "Bearer rmm_secret"
+        assert req.get_header("P-access-token") == "tok"
+        assert result == CoverRevalidation(not_modified=False, etag='"v1"', last_modified=None)
+        assert dest.read_bytes() == b"BYTES"
+
+    def test_a_404_answers_none_and_rom_m_is_not_counted_unreachable(self, tmp_path):
+        api, http = self._api({"romm_url": "http://romm.local"})
+        missing = urllib.error.HTTPError(
+            "http://romm.local/x", 404, "Not Found", http_client.HTTPMessage(), io.BytesIO(b'{"detail":"Not Found"}')
+        )
+
+        with patch("urllib.request.urlopen", side_effect=missing), patch("time.sleep"):
+            assert api.download_media(self._PATH, str(tmp_path / "m.part")) is None
+
+        failing = MagicMock(side_effect=RommConnectionError("refused"))
+        with patch("time.sleep"), pytest.raises(RommConnectionError):
+            http.with_retry(failing, base_delay=0)
+        assert failing.call_count == 3
 
 
 class TestDownloadCoverFromUrl:

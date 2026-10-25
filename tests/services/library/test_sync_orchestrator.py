@@ -3977,7 +3977,7 @@ class TestTheRunIsHeldUntilItEnds:
         run = await self._start_a_run_that_waits(library)
         run_ended_when_the_next_service_stopped: list[bool] = []
 
-        async def prune_shutdown() -> None:
+        async def next_shutdown() -> None:
             run_ended_when_the_next_service_stopped.append(run.done())
 
         app = _make_application(
@@ -3985,7 +3985,8 @@ class TestTheRunIsHeldUntilItEnds:
                 sync_service=library.sync,
                 shortcut_artwork_service=MagicMock(shutdown=AsyncMock()),
                 update_install_service=MagicMock(shutdown=AsyncMock()),
-                prune_service=MagicMock(shutdown=AsyncMock(side_effect=prune_shutdown)),
+                esde_media_service=MagicMock(shutdown=AsyncMock(side_effect=next_shutdown)),
+                prune_service=MagicMock(shutdown=AsyncMock()),
                 download_service=MagicMock(shutdown=AsyncMock()),
                 migration_service=MagicMock(shutdown=AsyncMock()),
                 session_lifecycle_service=MagicMock(shutdown=AsyncMock()),
@@ -8692,9 +8693,10 @@ class TestALibrarySurfaceThatCreatesNoShortcuts:
 class TestStandInsUnderASurfaceThatWritesEsde:
     """An apply run whose surface writes ES-DE places a stand-in for each representative, and its end removes the rest.
 
-    The pass is the real :class:`~services.esde.EsdeStandInService` over the
-    real file adapters under ``tmp_path``, so what a test reads back is what
-    lies in the system's ROM folder. GBA holds a version pair whose USA dump is
+    The pass is the real :class:`~services.esde.EsdeLibraryPass`, its stand-in
+    service over the real file adapters under ``tmp_path``, so what a test
+    reads back is what lies in the system's ROM folder. RetroDECK's home is
+    not named, so its media service links nothing. GBA holds a version pair whose USA dump is
     RomM's main sibling, an installed game, a game whose path a file of the
     user's holds, a plain game, and a disc set whose files only RomM's detail
     carries.
@@ -8702,19 +8704,30 @@ class TestStandInsUnderASurfaceThatWritesEsde:
 
     @staticmethod
     def _wire(library, fake_romm_api, tmp_path):
+        from fakes.fake_esde_media_index import FakeEsdeMediaIndex
         from fakes.fake_platform_systems import FakePlatformSystems
         from fakes.fake_retrodeck_folders import FakeRetroDeckFolders
+        from fakes.system_time import FakeClock
 
+        from adapters.esde_media_files import EsdeMediaFilesAdapter
         from adapters.esde_stand_in_index import EsdeStandInIndexAdapter
         from adapters.esde_stand_ins import EsdeStandInsAdapter
-        from services.esde import EsdeStandInService, EsdeStandInServiceConfig
+        from services.esde import (
+            EsdeLibraryPass,
+            EsdeLibraryPassConfig,
+            EsdeMediaService,
+            EsdeMediaServiceConfig,
+            EsdeStandInService,
+            EsdeStandInServiceConfig,
+        )
 
         roms = tmp_path / "retrodeck" / "roms"
-        library.sync._orchestrator._esde_stand_ins = EsdeStandInService(
+        folders = FakeRetroDeckFolders(roms=str(roms))
+        stand_ins = EsdeStandInService(
             config=EsdeStandInServiceConfig(
                 stand_ins=EsdeStandInsAdapter(cache_dir=str(tmp_path / "cache")),
                 index=EsdeStandInIndexAdapter(data_dir=str(tmp_path / "data"), logger=logging.getLogger("esde")),
-                retrodeck_folders=FakeRetroDeckFolders(roms=str(roms)),
+                retrodeck_folders=folders,
                 platform_systems=FakePlatformSystems(),
                 m3u_support=lambda system_name: True,
                 romm_api=fake_romm_api,
@@ -8725,6 +8738,22 @@ class TestStandInsUnderASurfaceThatWritesEsde:
                 logger=logging.getLogger("esde"),
                 log_debug=lambda msg: None,
             )
+        )
+        media = EsdeMediaService(
+            config=EsdeMediaServiceConfig(
+                romm_api=fake_romm_api,
+                files=EsdeMediaFilesAdapter(cache_dir=str(tmp_path / "cache")),
+                index=FakeEsdeMediaIndex(),
+                retrodeck_folders=folders,
+                settings=library.settings,
+                clock=FakeClock(),
+                loop=asyncio.get_running_loop(),
+                logger=logging.getLogger("esde"),
+                log_debug=lambda msg: None,
+            )
+        )
+        library.sync._orchestrator._esde_stand_ins = EsdeLibraryPass(
+            config=EsdeLibraryPassConfig(stand_ins=stand_ins, media=media)
         )
         return roms / "gba"
 

@@ -19,6 +19,7 @@ from fakes.fake_core_info_provider import FakeCoreInfoProvider
 from fakes.fake_cover_art_file_store import FakeCoverArtFileStore
 from fakes.fake_download_file_store import FakeDownloadFileStore
 from fakes.fake_emulator_sources import FakeEmulatorSources
+from fakes.fake_esde_media_index import FakeEsdeMediaIndex
 from fakes.fake_esde_stand_in_store import FakeEsdeStandInIndex, FakeEsdeStandInStore
 from fakes.fake_firmware_file_store import FakeFirmwareFileStore
 from fakes.fake_firmware_resolver import FakeFirmwareResolver
@@ -186,6 +187,19 @@ class TestBootstrap:
         result.adapters.esde_stand_in_index.write({42: record})
         assert os.readlink(folder / "Game.gba").startswith(os.path.realpath(tmp_path / "cache") + os.sep)
         assert (tmp_path / "data" / "esde" / "index.json").is_file()
+
+    def test_the_media_copies_lie_in_the_cache_root_and_their_record_in_the_data_root(self, tmp_path):
+        from adapters.esde_media_files import EsdeMediaFilesAdapter
+        from adapters.esde_media_index import EsdeMediaIndexAdapter
+
+        result = _bootstrap_for(tmp_path)
+
+        assert isinstance(result.adapters.esde_media_files, EsdeMediaFilesAdapter)
+        assert isinstance(result.adapters.esde_media_index, EsdeMediaIndexAdapter)
+        staged = result.adapters.esde_media_files.stage(42, "covers", on_demand=False)
+        assert staged.startswith(os.path.realpath(tmp_path / "cache") + os.sep)
+        result.adapters.esde_media_index.write({})
+        assert (tmp_path / "data" / "esde" / "media.json").is_file()
 
     def test_returns_retrodeck_folders_adapter(self, tmp_path):
         """Bootstrap instantiates the RetroDECK paths adapter for the callbacks bundle."""
@@ -691,6 +705,8 @@ class TestWireServices:
             "tender_logo": MagicMock(),
             "esde_stand_ins": FakeEsdeStandInStore(),
             "esde_stand_in_index": FakeEsdeStandInIndex(),
+            "esde_media_files": MagicMock(),
+            "esde_media_index": FakeEsdeMediaIndex(),
             "panel_connected": MagicMock(),
         }
 
@@ -741,6 +757,8 @@ class TestWireServices:
                 tender_logo=deps["tender_logo"],
                 esde_stand_ins=deps["esde_stand_ins"],
                 esde_stand_in_index=deps["esde_stand_in_index"],
+                esde_media_files=deps["esde_media_files"],
+                esde_media_index=deps["esde_media_index"],
             ),
             stores=StateBundle(
                 settings=deps["settings"],
@@ -843,7 +861,7 @@ class TestWireServices:
     def test_returns_expected_services(self, tmp_path):
         deps = self._make_deps(tmp_path)
         result = wire_services(self._make_config(deps))
-        assert len(fields(result)) == 38
+        assert len(fields(result)) == 39
         assert all(getattr(result, field.name) is not None for field in fields(result))
         assert isinstance(result.prune_conflicts, PruneConflicts)
         assert isinstance(result.core_service, CoreService)
@@ -863,14 +881,24 @@ class TestWireServices:
         assert isinstance(result.shortcut_artwork_service, ShortcutArtworkService)
         deps["loop"].close()
 
-    def test_the_library_sync_hands_its_units_to_the_stand_ins_over_the_bundle_s_seams(self, tmp_path):
-        from services.esde import EsdeStandInService
+    def test_the_library_sync_hands_its_units_to_the_stand_ins_then_the_media_over_the_bundle_s_seams(self, tmp_path):
+        from services.esde import EsdeLibraryPass
 
         deps = self._make_deps(tmp_path)
         result = wire_services(self._make_config(deps))
 
-        stand_ins = result.sync_service._orchestrator._esde_stand_ins
-        assert isinstance(stand_ins, EsdeStandInService)
+        library = result.sync_service._orchestrator._esde_stand_ins
+        assert isinstance(library, EsdeLibraryPass)
+        assert result.settings_service._surface_listener is library
+        stand_ins = library._stand_ins
+        media = library._media
+        assert media is result.esde_media_service
+        assert media._files is deps["esde_media_files"]
+        assert media._index is deps["esde_media_index"]
+        assert media._romm_api is deps["romm_api"]
+        assert media._retrodeck_folders is deps["retrodeck_folders"]
+        assert media._settings is deps["settings"]
+        assert media._clock is deps["clock"]
         assert stand_ins._stand_ins is deps["esde_stand_ins"]
         assert stand_ins._index is deps["esde_stand_in_index"]
         assert stand_ins._retrodeck_folders is deps["retrodeck_folders"]
@@ -889,7 +917,6 @@ class TestWireServices:
         assert result.rom_adoption_service._search._stand_ins is stand_ins
         assert result.rom_adoption_service._renamer._stand_ins is stand_ins
         assert result.game_detail_service._stand_ins is stand_ins
-        assert result.settings_service._surface_listener is stand_ins
         result.download_service._download_in_progress.add(7)
         assert stand_ins._active_downloads() == {7}
         deps["loop"].close()

@@ -30,7 +30,14 @@ from services.disc import DiscService, DiscServiceConfig
 from services.disc_launch_resolver import DiscLaunchResolver, DiscLaunchResolverConfig
 from services.downloads import DownloadService, DownloadServiceConfig
 from services.emulator_sources import EmulatorSourcesService, EmulatorSourcesServiceConfig
-from services.esde import EsdeStandInService, EsdeStandInServiceConfig
+from services.esde import (
+    EsdeLibraryPass,
+    EsdeLibraryPassConfig,
+    EsdeMediaService,
+    EsdeMediaServiceConfig,
+    EsdeStandInService,
+    EsdeStandInServiceConfig,
+)
 from services.firmware import FirmwareService, FirmwareServiceConfig
 from services.firmware.store import FirmwareStore, FirmwareStoreConfig
 from services.game_detail import GameDetailService, GameDetailServiceConfig
@@ -158,6 +165,7 @@ class ServicesBundle:
     relaunch_options_resolver: RelaunchOptionsResolver
     leftover_tmp_cleanup_service: LeftoverTmpCleanupService
     esde_stand_in_service: EsdeStandInService
+    esde_media_service: EsdeMediaService
 
 
 def wire_services(cfg: WiringConfig) -> ServicesBundle:
@@ -492,6 +500,24 @@ def wire_services(cfg: WiringConfig) -> ServicesBundle:
             log_debug=cfg.callbacks.log_debug,
         ),
     )
+    esde_media_service = EsdeMediaService(
+        config=EsdeMediaServiceConfig(
+            romm_api=cfg.adapters.romm_api,
+            files=cfg.adapters.esde_media_files,
+            index=cfg.adapters.esde_media_index,
+            retrodeck_folders=cfg.callbacks.retrodeck_folders,
+            settings=cfg.stores.settings,
+            clock=cfg.runtime.clock,
+            loop=cfg.runtime.loop,
+            logger=cfg.runtime.logger,
+            log_debug=cfg.callbacks.log_debug,
+        ),
+    )
+    # The sync and the settings reach both through one pass: a game's media are
+    # named after the entry its stand-in, or its download, gives it.
+    esde_library_pass = EsdeLibraryPass(
+        config=EsdeLibraryPassConfig(stand_ins=esde_stand_in_service, media=esde_media_service),
+    )
 
     sync_service = LibraryService(
         config=LibraryServiceConfig(
@@ -516,7 +542,7 @@ def wire_services(cfg: WiringConfig) -> ServicesBundle:
             renderer_gc=cfg.adapters.renderer_gc,
             conflict_rules=conflict_rules,
             artwork_job=shortcut_artwork_service,
-            esde_stand_ins=esde_stand_in_service,
+            esde_stand_ins=esde_library_pass,
         ),
     )
     pending_sync_binding.set(lambda: sync_service.pending_sync)
@@ -669,7 +695,7 @@ def wire_services(cfg: WiringConfig) -> ServicesBundle:
             settings_persister=cfg.callbacks.settings_persister,
             steam_config=cfg.adapters.steam_config,
             conflict_rules=conflict_rules,
-            surface_listener=esde_stand_in_service,
+            surface_listener=esde_library_pass,
         ),
     )
 
@@ -953,4 +979,5 @@ def wire_services(cfg: WiringConfig) -> ServicesBundle:
         relaunch_options_resolver=relaunch_options_resolver,
         leftover_tmp_cleanup_service=leftover_tmp_cleanup_service,
         esde_stand_in_service=esde_stand_in_service,
+        esde_media_service=esde_media_service,
     )
