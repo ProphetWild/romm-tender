@@ -29,6 +29,8 @@ a pytest ``tmp_path`` and wires the **real** services via the real
   platform is its own system unless a test says otherwise: the seeded
   RetroDECK carries no catalogue whose platform tags a RomM id could reach.
   The kept ids and their live read in ``PlatformSystemService`` stay real.
+* ``esde_running`` → :class:`FakeEsdeRunning`, so whether ES-DE runs is what a
+  test says rather than what the machine running the suite has open.
 * ``emit`` → an ``AsyncMock`` so tests assert emissions.
 
 The SQLite database, the file stores, and the settings file all write
@@ -46,6 +48,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock
 
+from fakes.fake_esde_running import FakeEsdeRunning
 from fakes.fake_game_process_control import FakeGameProcessControlAdapter
 from fakes.fake_journal import FakeJournal
 from fakes.fake_latest_release import FakeLatestRelease
@@ -148,6 +151,9 @@ class ContractHarness:
     journal: FakeJournal
     # What a platform's system answers; a test sets ``answers`` on it.
     platform_systems: FakeSourcePlatformSystems
+    # Whether ES-DE runs, which decides when its gamelists are written; a test
+    # sets ``running`` on it.
+    esde_running: FakeEsdeRunning
     # Where the drives a place for Tender's folder may lie on are mounted, and
     # which paths count as mounts: a folder cannot be mounted in a test, so a
     # test adds a drive's folder to ``mounts`` to connect it.
@@ -247,6 +253,7 @@ def build_contract_harness(tmp_path: Any, *, installed_program: bool = False) ->
     fake_units = FakeTransientUnits()
     fake_journal = FakeJournal()
     fake_steam = FakeSteamInterface()
+    fake_esde_running = FakeEsdeRunning()
     drives_root = str(tmp_path / "media")
     mounts: set[str] = set()
     patched_adapters = dataclasses.replace(
@@ -264,6 +271,7 @@ def build_contract_harness(tmp_path: Any, *, installed_program: bool = False) ->
         download_release_asset=fake_downloads,
         transient_units=fake_units,
         journal=fake_journal,
+        esde_running=fake_esde_running,
         tender_folder=TenderFolderAdapter(
             settings=result.stores.settings,
             user_home=str(tmp_path / "home"),
@@ -339,6 +347,7 @@ def build_contract_harness(tmp_path: Any, *, installed_program: bool = False) ->
         units=fake_units,
         journal=fake_journal,
         platform_systems=fake_platform_systems,
+        esde_running=fake_esde_running,
         drives_root=drives_root,
         mounts=mounts,
     )

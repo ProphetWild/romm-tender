@@ -869,15 +869,15 @@ class RendererAboveCeilingProvider(Protocol):
 
 
 class EsdeStandInPass(Protocol):
-    """What a library sync's apply run hands the ES-DE pass — stand-ins and media: its surface, each unit, its end.
+    """What a library sync's apply run hands the ES-DE pass — stand-ins, media, gamelists: its surface, units, end.
 
     ``begin_run`` names the library surface the run syncs to; the pass places
     and removes nothing unless that surface writes ES-DE. ``place`` is handed a
     unit once its rows are committed, or once it was skipped as unchanged, with
     the ids of the ROMs the sync gives shortcuts among its ROMs. ``settle`` ends
-    a run that was not cancelled; a run that ends without it removes nothing.
-    What the pass fetches it fetches in the background, so neither call waits
-    on it.
+    a run that was not cancelled; a run that ends without it removes nothing
+    and writes no gamelist. What the pass fetches it fetches in the background,
+    so neither call waits on it.
     """
 
     def begin_run(self, surface: LibrarySurface) -> None: ...
@@ -926,8 +926,8 @@ class LibrarySurfaceListener(Protocol):
     """What is told each time the library surface setting is stored, after it is persisted.
 
     The composition root satisfies this with ``EsdeLibraryPass``, which
-    removes every stand-in and every media link once the surface stored writes
-    no ES-DE.
+    removes every stand-in and every media link, and drops what waits to be
+    written into a gamelist, once the surface stored writes no ES-DE.
     """
 
     async def surface_stored(self, surface: LibrarySurface) -> None: ...
@@ -947,6 +947,15 @@ class EsdeOnDemandMedia(Protocol):
         still under way.
         """
         ...
+
+
+class EsdePendingGamelists(Protocol):
+    """What ES-DE's ``startup`` hook asks of the gamelists Tender writes: every one with entries waiting, now.
+
+    The composition root satisfies this with ``EsdeGamelistService``.
+    """
+
+    async def write_pending(self) -> None: ...
 
 
 class ShortcutArtworkJob(Protocol):

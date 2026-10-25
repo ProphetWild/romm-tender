@@ -374,6 +374,12 @@ IO_SEAM_METHODS: frozenset[str] = frozenset(
         "kept_size",
         "forget_game",
         "unlink_all",
+        # EsdeGamelistStore (services/protocols/files.py) — the whole of one of
+        # ES-DE's gamelists read, or written through a temporary file and
+        # fsynced. The record's ``read`` and ``write`` are names too common to
+        # list.
+        "read_gamelist",
+        "write_gamelist",
     }
 )
 

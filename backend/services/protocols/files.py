@@ -4,7 +4,7 @@ Each Protocol owns the raw POSIX-style file operations one service
 needs against one logical subtree (cover art, ROM downloads, the
 launcher download queue, firmware/BIOS files, RetroDECK migration
 flows, installed ROMs, save files, SteamGridDB artwork cache, ES-DE's
-stand-ins and media).
+stand-ins, media and gamelists).
 Implementations live in adapters; services see only the I/O seams.
 
 Implementations are synchronous — services that call from an async
@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
     from contextlib import AbstractContextManager
 
+    from domain.esde_gamelist_record import SystemGamelist
     from domain.esde_media import MediaFolder
     from domain.esde_media_record import GameMedia, LinkOutcome
     from domain.esde_stand_in import PlaceOutcome, StandInRecord, StandInShape
@@ -168,6 +169,34 @@ class EsdeMediaIndexStore(Protocol):
     def read(self) -> dict[int, GameMedia]: ...
 
     def write(self, index: Mapping[int, GameMedia]) -> None: ...
+
+
+class EsdeGamelistStore(Protocol):
+    """ES-DE's gamelist files, read as the text they hold and written whole.
+
+    ``read_gamelist`` answers ``None`` where no file is there, and raises
+    ``OSError`` where it cannot be read or ``ValueError`` where it is no UTF-8
+    text. ``write_gamelist`` replaces the file through a temporary one beside
+    it, keeping its mode and creating its folder, and raises ``OSError`` or
+    ``ValueError`` where it could not, leaving the file as it was.
+    """
+
+    def read_gamelist(self, path: str) -> str | None: ...
+
+    def write_gamelist(self, path: str, text: str) -> None: ...
+
+
+class EsdeGamelistIndexStore(Protocol):
+    """The record of ES-DE's gamelists; what goes into it is the gamelist service's alone.
+
+    ``read`` answers an empty record where there is none or it cannot be read,
+    and never raises; ``write`` replaces it whole and raises ``OSError`` where
+    it could not be written.
+    """
+
+    def read(self) -> dict[str, SystemGamelist]: ...
+
+    def write(self, index: Mapping[str, SystemGamelist]) -> None: ...
 
 
 class UpdateStagingStore(Protocol):

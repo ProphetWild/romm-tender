@@ -8704,7 +8704,9 @@ class TestStandInsUnderASurfaceThatWritesEsde:
 
     @staticmethod
     def _wire(library, fake_romm_api, tmp_path):
+        from fakes.fake_esde_gamelist_store import FakeEsdeGamelistFiles, FakeEsdeGamelistIndex
         from fakes.fake_esde_media_index import FakeEsdeMediaIndex
+        from fakes.fake_esde_running import FakeEsdeRunning
         from fakes.fake_platform_systems import FakePlatformSystems
         from fakes.fake_retrodeck_folders import FakeRetroDeckFolders
         from fakes.system_time import FakeClock
@@ -8713,6 +8715,8 @@ class TestStandInsUnderASurfaceThatWritesEsde:
         from adapters.esde_stand_in_index import EsdeStandInIndexAdapter
         from adapters.esde_stand_ins import EsdeStandInsAdapter
         from services.esde import (
+            EsdeGamelistService,
+            EsdeGamelistServiceConfig,
             EsdeLibraryPass,
             EsdeLibraryPassConfig,
             EsdeMediaService,
@@ -8752,8 +8756,19 @@ class TestStandInsUnderASurfaceThatWritesEsde:
                 log_debug=lambda msg: None,
             )
         )
+        gamelists = EsdeGamelistService(
+            config=EsdeGamelistServiceConfig(
+                files=FakeEsdeGamelistFiles(),
+                index=FakeEsdeGamelistIndex(),
+                retrodeck_folders=folders,
+                esde_running=FakeEsdeRunning(),
+                loop=asyncio.get_running_loop(),
+                logger=logging.getLogger("esde"),
+                log_debug=lambda msg: None,
+            )
+        )
         library.sync._orchestrator._esde_stand_ins = EsdeLibraryPass(
-            config=EsdeLibraryPassConfig(stand_ins=stand_ins, media=media)
+            config=EsdeLibraryPassConfig(stand_ins=stand_ins, media=media, gamelists=gamelists)
         )
         return roms / "gba"
 

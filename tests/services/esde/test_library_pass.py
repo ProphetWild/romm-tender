@@ -1,9 +1,10 @@
-"""``EsdeLibraryPass``: the stand-ins first, then each game's media under the name its entry gives it.
+"""``EsdeLibraryPass``: the stand-ins first, then each game's media and gamelist entry under its entry's name.
 
-The stand-in service runs over its in-memory store and the media service over
-the real file adapter on ``tmp_path``, both as the composition root wires them
-and both handed the pass's calls, so a test reads back where a game's stand-in
-stands and where its media are linked.
+The stand-in service runs over its in-memory store, and the media and gamelist
+services over the real file adapters on ``tmp_path``, all as the composition
+root wires them and all handed the pass's calls, so a test reads back where a
+game's stand-in stands, where its media are linked and what its system's
+gamelist holds.
 """
 
 from __future__ import annotations
@@ -14,7 +15,9 @@ from dataclasses import dataclass
 from typing import Any
 
 import pytest
+from fakes.fake_esde_gamelist_store import FakeEsdeGamelistIndex
 from fakes.fake_esde_media_index import FakeEsdeMediaIndex
+from fakes.fake_esde_running import FakeEsdeRunning
 from fakes.fake_esde_stand_in_store import FakeEsdeStandInIndex, FakeEsdeStandInStore
 from fakes.fake_platform_systems import FakePlatformSystems
 from fakes.fake_retrodeck_folders import FakeRetroDeckFolders
@@ -22,11 +25,14 @@ from fakes.fake_romm_api import FakeRommApi
 from fakes.fake_unit_of_work import FakeUnitOfWork, FakeUnitOfWorkFactory
 from fakes.system_time import FakeClock
 
+from adapters.esde_gamelist_files import EsdeGamelistFilesAdapter
 from adapters.esde_media_files import EsdeMediaFilesAdapter
 from domain.rom import Rom
 from domain.rom_install import RomInstall
 from domain.work_unit import WorkUnit
 from services.esde import (
+    EsdeGamelistService,
+    EsdeGamelistServiceConfig,
     EsdeLibraryPass,
     EsdeLibraryPassConfig,
     EsdeMediaService,
@@ -42,6 +48,7 @@ _UNIT = WorkUnit(type="platform", id=1, name="GBA", slug="gba", rom_count=0)
 def _rom(rom_id: int) -> dict[str, Any]:
     return {
         "id": rom_id,
+        "name": f"Game {rom_id}",
         "fs_name": f"Game {rom_id}.gba",
         "platform_id": 1,
         "platform_slug": "gba",
@@ -66,6 +73,15 @@ class Harness:
     uow: FakeUnitOfWork
     roms_root: str
     media_root: str
+    gamelists_root: str
+    esde: FakeEsdeRunning
+
+    def gamelist(self) -> str | None:
+        path = os.path.join(self.gamelists_root, "gba", "gamelist.xml")
+        if not os.path.exists(path):
+            return None
+        with open(path, encoding="utf-8") as handle:
+            return handle.read()
 
     def serve(self, *roms: dict[str, Any]) -> None:
         for rom in roms:
@@ -144,9 +160,30 @@ async def h(tmp_path, logger) -> Harness:
             log_debug=lambda msg: None,
         )
     )
-    library = EsdeLibraryPass(config=EsdeLibraryPassConfig(stand_ins=stand_ins, media=media))
-    media_root = os.path.join(str(tmp_path / "retrodeck"), "ES-DE", "downloaded_media")
-    return Harness(library, store, romm, uow, str(tmp_path / "roms"), media_root)
+    esde = FakeEsdeRunning()
+    gamelists = EsdeGamelistService(
+        config=EsdeGamelistServiceConfig(
+            files=EsdeGamelistFilesAdapter(),
+            index=FakeEsdeGamelistIndex(),
+            retrodeck_folders=folders,
+            esde_running=esde,
+            loop=loop,
+            logger=logger,
+            log_debug=lambda msg: None,
+        )
+    )
+    library = EsdeLibraryPass(config=EsdeLibraryPassConfig(stand_ins=stand_ins, media=media, gamelists=gamelists))
+    esde_root = os.path.join(str(tmp_path / "retrodeck"), "ES-DE")
+    return Harness(
+        library,
+        store,
+        romm,
+        uow,
+        str(tmp_path / "roms"),
+        os.path.join(esde_root, "downloaded_media"),
+        os.path.join(esde_root, "gamelists"),
+        esde,
+    )
 
 
 class TestAUnit:
@@ -175,6 +212,29 @@ class TestAUnit:
 
         assert h.romm.media_requests() == []
 
+    async def test_a_representative_s_fields_reach_its_system_s_gamelist_under_the_stand_in_s_name(self, h):
+        h.serve(_rom(1))
+
+        await h.run(_rom(1))
+
+        gamelist = h.gamelist()
+        assert gamelist is not None
+        assert "<path>./Game 1.gba</path>" in gamelist
+        assert "<name>Game 1</name>" in gamelist
+
+    async def test_an_installed_representative_s_entry_is_its_download_s_name(self, h):
+        h.serve(_rom(1))
+        h.install(1, os.path.join(h.roms_root, "gba", "Game 1 (Rev 1).gba"))
+
+        await h.run(_rom(1))
+
+        assert "<path>./Game 1 (Rev 1).gba</path>" in (h.gamelist() or "")
+
+    async def test_a_unit_skipped_as_unchanged_writes_no_gamelist(self, h):
+        await h.run(_rom(1), skipped=True)
+
+        assert h.gamelist() is None
+
     async def test_a_run_whose_surface_writes_no_esde_fetches_nothing(self, h):
         h.serve(_rom(1))
 
@@ -182,6 +242,18 @@ class TestAUnit:
 
         assert h.romm.media_requests() == []
         assert h.stand_ins.links == {}
+        assert h.gamelist() is None
+
+
+class TestARunWhileEsdeRuns:
+    async def test_the_gamelist_waits_for_es_de_s_next_start(self, h):
+        h.esde.running = True
+
+        await h.run(_rom(1))
+
+        assert h.gamelist() is None
+        await h.library._gamelists.write_pending()
+        assert "<path>./Game 1.gba</path>" in (h.gamelist() or "")
 
 
 class TestARunsEnd:
@@ -218,6 +290,18 @@ class TestLeavingEsde:
 
         assert h.stand_ins.links == {}
         assert not os.path.lexists(h.cover("Game 1"))
+
+    async def test_what_waits_for_a_gamelist_is_dropped_and_the_gamelist_stays(self, h):
+        await h.run(_rom(1))
+        written = h.gamelist()
+        assert "<path>./Game 1.gba</path>" in (written or "")
+        h.esde.running = True
+        await h.run(_rom(1), _rom(2))
+
+        await h.library.surface_stored("steam")
+        await h.library._gamelists.write_pending()
+
+        assert h.gamelist() == written
 
     async def test_a_surface_that_writes_esde_keeps_both(self, h):
         h.serve(_rom(1))

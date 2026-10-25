@@ -19,7 +19,9 @@ from fakes.fake_core_info_provider import FakeCoreInfoProvider
 from fakes.fake_cover_art_file_store import FakeCoverArtFileStore
 from fakes.fake_download_file_store import FakeDownloadFileStore
 from fakes.fake_emulator_sources import FakeEmulatorSources
+from fakes.fake_esde_gamelist_store import FakeEsdeGamelistFiles, FakeEsdeGamelistIndex
 from fakes.fake_esde_media_index import FakeEsdeMediaIndex
+from fakes.fake_esde_running import FakeEsdeRunning
 from fakes.fake_esde_stand_in_store import FakeEsdeStandInIndex, FakeEsdeStandInStore
 from fakes.fake_firmware_file_store import FakeFirmwareFileStore
 from fakes.fake_firmware_resolver import FakeFirmwareResolver
@@ -200,6 +202,19 @@ class TestBootstrap:
         assert staged.startswith(os.path.realpath(tmp_path / "cache") + os.sep)
         result.adapters.esde_media_index.write({})
         assert (tmp_path / "data" / "esde" / "media.json").is_file()
+
+    def test_the_gamelists_record_lies_in_the_data_root_and_es_de_is_looked_for_among_the_processes(self, tmp_path):
+        from adapters.esde_gamelist_files import EsdeGamelistFilesAdapter
+        from adapters.esde_gamelist_index import EsdeGamelistIndexAdapter
+        from adapters.esde_process import EsdeProcessAdapter
+
+        result = _bootstrap_for(tmp_path)
+
+        assert isinstance(result.adapters.esde_gamelist_files, EsdeGamelistFilesAdapter)
+        assert isinstance(result.adapters.esde_gamelist_index, EsdeGamelistIndexAdapter)
+        assert isinstance(result.adapters.esde_running, EsdeProcessAdapter)
+        result.adapters.esde_gamelist_index.write({})
+        assert (tmp_path / "data" / "esde" / "gamelists.json").is_file()
 
     def test_returns_retrodeck_folders_adapter(self, tmp_path):
         """Bootstrap instantiates the RetroDECK paths adapter for the callbacks bundle."""
@@ -707,6 +722,9 @@ class TestWireServices:
             "esde_stand_in_index": FakeEsdeStandInIndex(),
             "esde_media_files": MagicMock(),
             "esde_media_index": FakeEsdeMediaIndex(),
+            "esde_gamelist_files": FakeEsdeGamelistFiles(),
+            "esde_gamelist_index": FakeEsdeGamelistIndex(),
+            "esde_running": FakeEsdeRunning(),
             "panel_connected": MagicMock(),
         }
 
@@ -759,6 +777,9 @@ class TestWireServices:
                 esde_stand_in_index=deps["esde_stand_in_index"],
                 esde_media_files=deps["esde_media_files"],
                 esde_media_index=deps["esde_media_index"],
+                esde_gamelist_files=deps["esde_gamelist_files"],
+                esde_gamelist_index=deps["esde_gamelist_index"],
+                esde_running=deps["esde_running"],
             ),
             stores=StateBundle(
                 settings=deps["settings"],
@@ -861,7 +882,7 @@ class TestWireServices:
     def test_returns_expected_services(self, tmp_path):
         deps = self._make_deps(tmp_path)
         result = wire_services(self._make_config(deps))
-        assert len(fields(result)) == 39
+        assert len(fields(result)) == 40
         assert all(getattr(result, field.name) is not None for field in fields(result))
         assert isinstance(result.prune_conflicts, PruneConflicts)
         assert isinstance(result.core_service, CoreService)
@@ -904,6 +925,12 @@ class TestWireServices:
         assert stand_ins._retrodeck_folders is deps["retrodeck_folders"]
         assert stand_ins._settings is deps["settings"]
         assert result.esde_stand_in_service is stand_ins
+        gamelists = library._gamelists
+        assert gamelists is result.esde_gamelist_service
+        assert gamelists._files is deps["esde_gamelist_files"]
+        assert gamelists._index is deps["esde_gamelist_index"]
+        assert gamelists._esde_running is deps["esde_running"]
+        assert gamelists._retrodeck_folders is deps["retrodeck_folders"]
         deps["loop"].close()
 
     def test_every_consumer_of_the_stand_ins_holds_the_sync_s_and_it_reads_the_downloads_under_way(self, tmp_path):

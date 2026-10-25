@@ -186,6 +186,16 @@ class RendererRssFn(Protocol):
     def __call__(self) -> int | None: ...
 
 
+class EsdeRunningFn(Protocol):
+    """Whether an ES-DE process runs on this machine.
+
+    ``True`` where the process table cannot be read, so a caller that holds
+    off while ES-DE runs holds off then too.
+    """
+
+    def __call__(self) -> bool: ...
+
+
 class RendererGcFn(Protocol):
     """Force a garbage collection in the Steam renderer, returning success.
 

@@ -31,6 +31,8 @@ from services.disc_launch_resolver import DiscLaunchResolver, DiscLaunchResolver
 from services.downloads import DownloadService, DownloadServiceConfig
 from services.emulator_sources import EmulatorSourcesService, EmulatorSourcesServiceConfig
 from services.esde import (
+    EsdeGamelistService,
+    EsdeGamelistServiceConfig,
     EsdeLibraryPass,
     EsdeLibraryPassConfig,
     EsdeMediaService,
@@ -166,6 +168,7 @@ class ServicesBundle:
     leftover_tmp_cleanup_service: LeftoverTmpCleanupService
     esde_stand_in_service: EsdeStandInService
     esde_media_service: EsdeMediaService
+    esde_gamelist_service: EsdeGamelistService
 
 
 def wire_services(cfg: WiringConfig) -> ServicesBundle:
@@ -513,10 +516,24 @@ def wire_services(cfg: WiringConfig) -> ServicesBundle:
             log_debug=cfg.callbacks.log_debug,
         ),
     )
-    # The sync and the settings reach both through one pass: a game's media are
-    # named after the entry its stand-in, or its download, gives it.
+    esde_gamelist_service = EsdeGamelistService(
+        config=EsdeGamelistServiceConfig(
+            files=cfg.adapters.esde_gamelist_files,
+            index=cfg.adapters.esde_gamelist_index,
+            retrodeck_folders=cfg.callbacks.retrodeck_folders,
+            esde_running=cfg.adapters.esde_running,
+            loop=cfg.runtime.loop,
+            logger=cfg.runtime.logger,
+            log_debug=cfg.callbacks.log_debug,
+        ),
+    )
+    # The sync and the settings reach all three through one pass: a game's media
+    # and its gamelist entry are named after the entry its stand-in, or its
+    # download, gives it.
     esde_library_pass = EsdeLibraryPass(
-        config=EsdeLibraryPassConfig(stand_ins=esde_stand_in_service, media=esde_media_service),
+        config=EsdeLibraryPassConfig(
+            stand_ins=esde_stand_in_service, media=esde_media_service, gamelists=esde_gamelist_service
+        ),
     )
 
     sync_service = LibraryService(
@@ -980,4 +997,5 @@ def wire_services(cfg: WiringConfig) -> ServicesBundle:
         leftover_tmp_cleanup_service=leftover_tmp_cleanup_service,
         esde_stand_in_service=esde_stand_in_service,
         esde_media_service=esde_media_service,
+        esde_gamelist_service=esde_gamelist_service,
     )
