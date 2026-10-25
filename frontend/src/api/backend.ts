@@ -14,6 +14,7 @@ import type {
   CollectionOwnerScope,
   CollectionNamingMode,
   QamEntryPosition,
+  LibrarySurface,
   RegistryPlatform,
   FirmwareStatus,
   PlatformFirmwareStatus,
@@ -487,6 +488,11 @@ export const setQamEntryPosition = endpoint<
   [QamEntryPosition],
   { success: boolean; reason?: WireReason; message?: string }
 >("set_qam_entry_position");
+// Read via getSettings().library_surface; the next library sync reads it when it starts.
+export const setLibrarySurface = endpoint<
+  [LibrarySurface],
+  { success: boolean; reason?: WireReason; message?: string }
+>("set_library_surface");
 export const getRegistryPlatforms = endpoint<[], { platforms: RegistryPlatform[] }>("get_registry_platforms");
 export const removePlatformShortcuts = endpoint<
   [string],

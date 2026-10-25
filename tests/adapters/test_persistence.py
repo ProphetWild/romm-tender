@@ -150,6 +150,19 @@ class TestSettingsSchema:
         assert result["collection_naming_mode"] == "by_label"
         assert result["version"] == 13
 
+    def test_default_library_surface_is_steam(self):
+        assert DEFAULT_SETTINGS["library_surface"] == "steam"
+
+    def test_a_settings_file_without_the_library_surface_reads_as_steam(self, adapter):
+        settings_path = os.path.join(adapter._settings_dir, "settings.json")
+        with open(settings_path, "w") as f:
+            json.dump({"version": 13, "qam_entry_position": "below_decky"}, f)
+        os.chmod(settings_path, 0o600)
+        result = adapter.load_settings()
+        assert result["library_surface"] == "steam"
+        assert result["qam_entry_position"] == "below_decky"
+        assert result["version"] == 13
+
     def test_mutable_default_is_not_aliased_to_template(self, adapter):
         """A missing key is backfilled with a COPY of its mutable default.
 

@@ -13,6 +13,7 @@ import os
 from typing import Any, Protocol
 
 from adapters.system_clock import SystemClock
+from domain.library_surface import DEFAULT_LIBRARY_SURFACE
 from domain.state_migrations import unreadable_settings
 
 _SETTINGS_VERSION = 13
@@ -77,6 +78,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     # (default) or ``"below_decky"``, as docs/architecture/qam-panel.md § The
     # entry describes. Read by the panel; no backend path consults it.
     "qam_entry_position": "above_decky",
+    "library_surface": DEFAULT_LIBRARY_SURFACE,
     "preferred_region": "auto",
     # User intent for the sync button: apply without being asked first. Stored
     # for a reader to choose between a preview and a run; no backend sync path

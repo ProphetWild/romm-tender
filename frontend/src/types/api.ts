@@ -47,6 +47,9 @@ export interface InstalledRom {
 /** Where Tender's Quick Access entry sits beside Decky Loader's (`qam/quickAccessEntry.tsx`). */
 export type QamEntryPosition = "above_decky" | "below_decky";
 
+/** Where a library sync puts the RomM library (`backend/domain/library_surface.py`). */
+export type LibrarySurface = "steam" | "esde" | "both";
+
 export interface Settings {
   romm_url: string;
   has_token: boolean;
@@ -66,6 +69,9 @@ export interface Settings {
   // Optional: the backend always sends it, but older payloads / test fixtures
   // may omit it, treated as "above_decky".
   qam_entry_position?: QamEntryPosition;
+  // Optional: the backend always sends it, but older payloads / test fixtures
+  // may omit it, treated as "steam".
+  library_surface?: LibrarySurface;
   // Preferred sibling-group region (ADR-0021 §3). "auto" = the fixed build-time
   // default order (World > USA > Europe > Japan); any other value heads the
   // ranking with that region on the next sync. Optional: the backend always

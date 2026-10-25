@@ -42,6 +42,7 @@ from typing import TYPE_CHECKING, Any
 
 from domain.collection_label import steam_collection_key
 from domain.collection_skip import apply_stamps
+from domain.library_surface import creates_steam_shortcuts, library_surface
 from domain.session_budget import post_run_advisory, session_memory_delta
 from domain.shortcut_data import build_shortcuts_data
 from domain.sibling_group import compute_component_group_keys
@@ -585,11 +586,8 @@ class SyncOrchestrator:
                 unit, synced_rom_ids, progress_step=progress_step, progress_total_steps=progress_total_steps
             )
             if all_collection_rom_ids:
-                collection_memberships[_collection_membership_key(unit)] = CollectionMembership(
-                    name=unit.name,
-                    rom_ids=all_collection_rom_ids,
-                    kind=str(unit.collection_kind),
-                    virtual_type=unit.virtual_type,
+                collection_memberships[_collection_membership_key(unit)] = CollectionMembership.of(
+                    unit, all_collection_rom_ids
                 )
             if settles and apply_stamps(unit.collection_kind, unit.collection_updated_at, all_collection_rom_ids):
                 restamp_collections.add(_collection_membership_key(unit))
@@ -762,6 +760,9 @@ class SyncOrchestrator:
         # a new rom_id reusing an old appId is never wrongly removed (#1036).
         box.committed_app_ids = set()
         box.run_interrupted = False
+        # Read once, here: a surface changed mid-run reaches the next run, never
+        # a unit of this one.
+        box.run_library_surface = library_surface(self._settings.get("library_surface"))
         # Session-budget gate run-scoped state (#1383): the paused flag, the
         # emitted-chunk counter (first chunk exempt → guaranteed forward progress),
         # and the distinct pause reason. The gate's own once-per-run measurement
@@ -1021,12 +1022,12 @@ class SyncOrchestrator:
     ) -> int:
         """Process one work unit start-to-finish; return its processed-ROM count.
 
-        The ROMs for the unit come from a live per-unit fetch. After the
-        frontend acks the unit's shortcuts (via ``report_unit_results``),
-        the reporter commits the unit: it upserts each acked ROM into the
-        ``roms`` aggregate and stamps the ROM's cached ``rom_metadata`` in
-        the same write UoW (Rom row first, metadata second — FK-safe), so
-        a ROM and its metadata land atomically.
+        The ROMs for the unit come from a live per-unit fetch. The reporter
+        commits the unit chunk by chunk — each once the frontend acks its
+        shortcuts, or at once where the run's surface creates none: it upserts
+        each fetched ROM into the ``roms`` aggregate and stamps its cached
+        ``rom_metadata`` in the same write UoW (Rom row first, metadata
+        second — FK-safe), so a ROM and its metadata land atomically.
 
         When the fetcher reports ``skipped=True`` (registry already
         matches the server-side platform state), the entire apply +
@@ -1169,28 +1170,33 @@ class SyncOrchestrator:
         # path then reuses the refreshed cache. The returned {rom_id, app_id} list
         # rides the unit's first apply chunk so the frontend re-applies each cover
         # to the EXISTING shortcut via SetCustomArtworkForApp — without that push
-        # the Steam tile stays stale in-session until a client restart.
-        cover_refreshes = await self._cover_preparer.refresh_changed_covers(
-            unit_roms, registry, progress_step=unit_index + 1, progress_total_steps=total_units, label=unit.name
-        )
+        # the Steam tile stays stale in-session until a client restart. Both
+        # cover steps write Steam's grid files, so a surface that creates no
+        # Steam shortcuts runs neither.
+        cover_refreshes: list[dict[str, int]] = []
+        confirmed_cover_sources: dict[int, str] = {}
+        if creates_steam_shortcuts(box.run_library_surface):
+            cover_refreshes = await self._cover_preparer.refresh_changed_covers(
+                unit_roms, registry, progress_step=unit_index + 1, progress_total_steps=total_units, label=unit.name
+            )
 
-        if box.is_cancelling():
-            return len(skip_ids)
+            if box.is_cancelling():
+                return len(skip_ids)
 
-        # Download artwork for the shortcuts about to be applied and stamp each
-        # delta entry's cover path in place (a no-op when the delta is empty).
-        # Returns the confirmed cover fingerprints (rom_id → fresh source) the
-        # per-unit commit persists onto the upserted rows (#1386).
-        confirmed_cover_sources = await self._cover_preparer.attach_unit_cover_paths(
-            unit, unit_roms, apply_emitted, unit_index=unit_index, total_units=total_units
-        )
+            # Download artwork for the shortcuts about to be applied and stamp each
+            # delta entry's cover path in place (a no-op when the delta is empty).
+            # Returns the confirmed cover fingerprints (rom_id → fresh source) the
+            # per-unit commit persists onto the upserted rows (#1386).
+            confirmed_cover_sources = await self._cover_preparer.attach_unit_cover_paths(
+                unit, unit_roms, apply_emitted, unit_index=unit_index, total_units=total_units
+            )
 
         if box.is_cancelling():
             return len(skip_ids)
 
         # Clear this platform's completion stamp now that its apply is actually
         # beginning — the fetch succeeded, artwork is done, and the cancel guard
-        # above has passed, so the next line starts emitting chunks. The stamp's
+        # above has passed, so the next line starts the chunk loop. The stamp's
         # contract is "this platform's last apply ran to completion", which a
         # fresh apply invalidates the instant it starts: a crash / cancel /
         # heartbeat-timeout before the final chunk must leave NO stamp, so the
@@ -1288,11 +1294,8 @@ class SyncOrchestrator:
             unit, synced_rom_ids, progress_step=progress_step, progress_total_steps=progress_total_steps
         )
         if all_collection_rom_ids:
-            collection_memberships[_collection_membership_key(unit)] = CollectionMembership(
-                name=unit.name,
-                rom_ids=all_collection_rom_ids,
-                kind=str(unit.collection_kind),
-                virtual_type=unit.virtual_type,
+            collection_memberships[_collection_membership_key(unit)] = CollectionMembership.of(
+                unit, all_collection_rom_ids
             )
         return unit_roms, skipped
 

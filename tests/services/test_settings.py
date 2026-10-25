@@ -336,6 +336,7 @@ class TestGetSettings:
                 "collection_owner_scope": "own",
                 "collection_naming_mode": "by_label",
                 "qam_entry_position": "below_decky",
+                "library_surface": "esde",
                 "preferred_region": "USA",
                 "skip_preview": True,
             }
@@ -351,8 +352,14 @@ class TestGetSettings:
         assert result["collection_owner_scope"] == "own"
         assert result["collection_naming_mode"] == "by_label"
         assert result["qam_entry_position"] == "below_decky"
+        assert result["library_surface"] == "esde"
         assert result["preferred_region"] == "USA"
         assert result["skip_preview"] is True
+
+    @pytest.mark.parametrize("stored", ["shortcuts", "", None, 3])
+    def test_a_stored_library_surface_it_cannot_read_is_reported_as_steam(self, service, settings, stored):
+        settings["library_surface"] = stored
+        assert service.get_settings()["library_surface"] == "steam"
 
     def test_never_returns_credentials_or_token(self, service, settings):
         settings["romm_api_token"] = "rmm_secret"
@@ -402,6 +409,7 @@ class TestGetSettings:
         assert result["collection_owner_scope"] == "all"
         assert result["collection_naming_mode"] == "merge"
         assert result["qam_entry_position"] == "above_decky"
+        assert result["library_surface"] == "steam"
         assert result["preferred_region"] == "auto"
         assert result["skip_preview"] is False
         assert result["romm_custom_header_names"] == []
@@ -1118,6 +1126,31 @@ class TestSetQamEntryPosition:
         assert refused.value.reason == "invalid_position"
         assert "Invalid Quick Access entry position" in refused.value.message
         assert "qam_entry_position" not in settings
+        settings_persister.save_settings.assert_not_called()
+
+
+class TestSetLibrarySurface:
+    @pytest.mark.parametrize("surface", ["steam", "esde", "both"])
+    def test_every_surface_persists(self, service, settings, settings_persister, surface):
+        result = service.set_library_surface(surface)
+        assert result == {"success": True}
+        assert settings["library_surface"] == surface
+        settings_persister.save_settings.assert_called_once_with()
+
+    @pytest.mark.parametrize("surface", ["ESDE", "shortcuts", "", None, True, ["esde"]])
+    def test_any_other_value_is_refused_without_writing(self, service, settings, settings_persister, surface):
+        with pytest.raises(Refused) as refused:
+            service.set_library_surface(surface)
+        assert refused.value.reason == "invalid_library_surface"
+        assert "Invalid library surface" in refused.value.message
+        assert "library_surface" not in settings
+        settings_persister.save_settings.assert_not_called()
+
+    def test_a_refusal_leaves_the_surface_already_stored(self, service, settings, settings_persister):
+        settings["library_surface"] = "both"
+        with pytest.raises(Refused):
+            service.set_library_surface("steam_only")
+        assert settings["library_surface"] == "both"
         settings_persister.save_settings.assert_not_called()
 
 

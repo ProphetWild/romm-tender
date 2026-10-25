@@ -427,6 +427,10 @@ class Endpoints:
         return self._services.settings_service.set_qam_entry_position(position)
 
     @route
+    def set_library_surface(self, surface):
+        return self._services.settings_service.set_library_surface(surface)
+
+    @route
     async def start_sync(self):
         return await self._services.sync_service.start_sync()
 

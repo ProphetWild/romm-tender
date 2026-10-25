@@ -28,6 +28,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from domain.library_surface import DEFAULT_LIBRARY_SURFACE
 from domain.preview_delta import PreviewDelta, preview_expires_at
 from domain.sync_state import SyncState
 
@@ -35,7 +36,9 @@ if TYPE_CHECKING:
     import asyncio
     from collections.abc import Mapping
 
+    from domain.library_surface import LibrarySurface
     from domain.sync_run_kind import SyncRunKind
+    from domain.work_unit import WorkUnit
 
 
 PREVIEW_MAX_AGE_SECONDS = 1800  # 30 minutes — preview snapshots stale beyond this
@@ -82,6 +85,11 @@ class CollectionMembership:
     rom_ids: list[int]
     kind: str
     virtual_type: str | None = None
+
+    @classmethod
+    def of(cls, unit: WorkUnit, rom_ids: list[int]) -> CollectionMembership:
+        """The membership of collection *unit*, whose members are *rom_ids*."""
+        return cls(name=unit.name, rom_ids=rom_ids, kind=str(unit.collection_kind), virtual_type=unit.virtual_type)
 
 
 @dataclass(frozen=True)
@@ -185,7 +193,8 @@ class LibrarySyncStateBox:
     # late ack from a cancelled run — is ignored rather than credited to the
     # wrong unit/run (#1041); a timed-out chunk's late ack instead matches the
     # ``abandoned_chunk`` stash by identity, after this field has been cleared
-    # (#1367).
+    # (#1367). A unit committed without being emitted (``run_library_surface``)
+    # holds no identity from its start, so no ack can match one of its chunks.
     active_unit_id: int | str | None = None
     # 0-based index of the unit's apply chunk currently dispatched to the
     # frontend. A unit's emitted shortcuts are split into chunks emitted +
@@ -224,6 +233,9 @@ class LibrarySyncStateBox:
     # death). Takes precedence over ``run_interrupted`` in the terminal branch.
     # Reset at the start of each run (#1383).
     run_paused: bool = False
+    # The library surface the apply run in flight syncs to, set from the
+    # setting at the start of each apply run.
+    run_library_surface: LibrarySurface = DEFAULT_LIBRARY_SURFACE
     # Every Steam appId bound by a ``commit_unit_results`` this run, across
     # BOTH the happy path and the heartbeat-timeout late-ack path (#1052).
     # The stale-removal scan excludes these so a new server-issued rom_id that

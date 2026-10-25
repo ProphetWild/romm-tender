@@ -8574,3 +8574,116 @@ class TestTheShortcutArtworkJobAfterARun:
         await library.sync.sync_preview()
 
         assert library.artwork_job.requests == [False]
+
+
+class TestALibrarySurfaceThatCreatesNoShortcuts:
+    """Under ``esde`` an apply run writes every fetched ROM's row and nothing of Steam's.
+
+    No chunk reaches the frontend and neither of the cover preparer's Steam
+    steps runs — the invalidation pass and the download both write Steam's grid
+    files. The surface is the one the setting named when the run started.
+    """
+
+    @staticmethod
+    def _seed_two_platforms(library, fake_romm_api) -> None:
+        _use_fake_romm(library, fake_romm_api)
+        _seed_platform(
+            fake_romm_api,
+            platform_id=1,
+            name="N64",
+            slug="n64",
+            roms=[
+                {"id": 10, "name": "Bound", "fs_name": "bound.z64", "path_cover_large": "cover-10.png"},
+                {"id": 11, "name": "Fresh", "fs_name": "fresh.z64", "path_cover_large": "cover-11.png"},
+            ],
+        )
+        _seed_platform(
+            fake_romm_api,
+            platform_id=2,
+            name="GBA",
+            slug="gba",
+            roms=[{"id": 20, "name": "Pocket", "fs_name": "p.gba"}],
+        )
+        library.settings["enabled_platforms"] = {"1": True, "2": True}
+        _seed_rom_row(
+            library, 10, app_id=1010, platform_slug="n64", name="Renamed", fs_name="bound.z64", cover_source="old.png"
+        )
+
+    @staticmethod
+    def _steam_cover_steps(library) -> tuple[AsyncMock, AsyncMock]:
+        refresh = AsyncMock(return_value=[])
+        attach = AsyncMock(return_value={})
+        library.sync._cover_preparer.refresh_changed_covers = refresh
+        library.sync._cover_preparer.attach_unit_cover_paths = attach
+        return refresh, attach
+
+    @pytest.mark.asyncio
+    async def test_it_emits_no_chunk_runs_no_steam_cover_step_and_commits_every_rom(self, library, fake_romm_api, emit):
+        self._seed_two_platforms(library, fake_romm_api)
+        library.settings["library_surface"] = "esde"
+        refresh, attach = self._steam_cover_steps(library)
+        library.sync._chunk_dispatcher._wait_for_unit_complete = AsyncMock(side_effect=AssertionError("waited"))
+        library.sync._box.sync_state = SyncState.RUNNING
+        library.sync._box.current_sync_id = "run-esde"
+
+        await library.sync._orchestrator._do_sync_per_unit()
+
+        assert [c for c in emit.call_args_list if c[0][0] == "sync_apply_unit"] == []
+        refresh.assert_not_awaited()
+        attach.assert_not_awaited()
+        with library.uow as uow:
+            assert {r.rom_id for r in uow.roms.iter_all()} == {10, 11, 20}
+            assert uow.roms.get(11).shortcut_app_id is None
+            assert uow.roms.get(20).shortcut_app_id is None
+            assert uow.roms.get(10).shortcut_app_id == 1010
+            assert uow.roms.get(10).cover_source == "old.png"
+            assert uow.platform_sync_state.get("n64") is not None
+            assert uow.platform_sync_state.get("gba") is not None
+            completed = uow.sync_runs.get_latest_completed()
+            assert completed is not None
+            assert completed.id == "run-esde"
+        (complete,) = [c[0][1] for c in emit.call_args_list if c[0][0] == "sync_complete"]
+        assert complete["total_games"] == 3
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("surface", ["steam", "both", None, "shortcuts"])
+    async def test_a_surface_that_creates_shortcuts_runs_both_steam_cover_steps_and_emits(
+        self, library, fake_romm_api, emit, surface
+    ):
+        self._seed_two_platforms(library, fake_romm_api)
+        if surface is not None:
+            library.settings["library_surface"] = surface
+        refresh, attach = self._steam_cover_steps(library)
+        library.sync._chunk_dispatcher._wait_for_unit_complete = _fake_wait_set_event
+        library.sync._box.sync_state = SyncState.RUNNING
+        library.sync._box.current_sync_id = "run-steam"
+
+        await library.sync._orchestrator._do_sync_per_unit()
+
+        assert refresh.await_count == 2
+        assert attach.await_count == 2
+        assert len([c for c in emit.call_args_list if c[0][0] == "sync_apply_unit"]) == 2
+
+    @pytest.mark.asyncio
+    async def test_the_surface_is_the_one_named_when_the_run_started(self, library, fake_romm_api, emit):
+        self._seed_two_platforms(library, fake_romm_api)
+        library.settings["library_surface"] = "esde"
+        refresh, attach = self._steam_cover_steps(library)
+        commit = library.sync._reporter.commit_unit_results
+
+        async def switch_to_steam_mid_run(*args, **kwargs):
+            library.settings["library_surface"] = "steam"
+            return await commit(*args, **kwargs)
+
+        library.sync._reporter.commit_unit_results = switch_to_steam_mid_run  # type: ignore[method-assign]
+        library.sync._chunk_dispatcher._wait_for_unit_complete = AsyncMock(side_effect=AssertionError("waited"))
+        library.sync._box.sync_state = SyncState.RUNNING
+        library.sync._box.current_sync_id = "run-switched"
+
+        await library.sync._orchestrator._do_sync_per_unit()
+
+        assert [c for c in emit.call_args_list if c[0][0] == "sync_apply_unit"] == []
+        refresh.assert_not_awaited()
+        attach.assert_not_awaited()
+        with library.uow as uow:
+            assert uow.roms.get(20) is not None

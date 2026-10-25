@@ -6,7 +6,9 @@ and decide what becomes of a chunk whose acknowledgement never comes. That loop
 is the whole module: *what* to apply is settled before it — the fetch, the
 group collapse and the delta are
 :class:`~services.library.sync_orchestrator.SyncOrchestrator`'s — and what the
-run makes of the outcome is settled after it.
+run makes of the outcome is settled after it. Where the run's library surface
+creates no Steam shortcuts, the same chunks are committed through the same
+reporter with no binding, and nothing is emitted or waited for.
 
 Nothing here opens a transaction or touches the outside world on its own:
 every durable write goes through :class:`~services.library.reporter.SyncReporter`
@@ -37,6 +39,7 @@ from typing import TYPE_CHECKING, Any
 
 from domain.collection_skip import apply_stamps, recorded_updated_at
 from domain.collection_sync_state import CollectionSyncState
+from domain.library_surface import creates_steam_shortcuts
 from domain.platform_skip import rom_id_checksum
 from domain.platform_sync_state import PlatformSyncState
 from domain.session_budget import CLIFF_KB, EFFECTIVE_CEILING_KB
@@ -47,6 +50,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterable
 
     from domain.rom import DeliveryRoute
+    from domain.sync_chunking import UnitChunk
     from domain.work_unit import WorkUnit
     from lib.late_binding import LateBinding
     from services.library._state import LibrarySyncStateBox
@@ -155,7 +159,9 @@ class ChunkDispatcher:
         beside a checksum: of ``unit_roms``' ids for a platform, of the listing's
         ``rom_ids`` for a collection. Returns the running
         count of shortcuts applied — a cancel or heartbeat timeout returns early
-        with the chunks committed so far.
+        with the chunks committed so far. Under a library surface that creates
+        no Steam shortcuts the staged chunks go to :meth:`_commit_without_emitting`
+        instead, and its count is returned.
         """
         box = self._sync_state
         # Stage the DELTA representatives for cover finalise + binding, and the
@@ -177,6 +183,15 @@ class ChunkDispatcher:
         fetch_id = str(box.current_sync_id or "") if unit.type == "platform" else None
         chunks = build_unit_chunks(emitted, shortcuts_data, _APPLY_CHUNK_SIZE)
         roms_by_id = {r["id"]: r for r in unit_roms if "id" in r}
+        if not creates_steam_shortcuts(box.run_library_surface):
+            return await self._commit_without_emitting(
+                unit,
+                chunks,
+                roms_by_id,
+                fetch_id=fetch_id,
+                collection_member_ids=collection_member_ids,
+                fetch_started_at=fetch_started_at,
+            )
         chunk_count = len(chunks)
         applied_count = 0
         for chunk_index, chunk in enumerate(chunks):
@@ -293,33 +308,16 @@ class ChunkDispatcher:
                 self._abandon_active_chunk(chunk_rows)
                 return applied_count
 
-            platform_stamp = self._build_final_platform_stamp(
-                unit, chunk_index, chunk_count, fetch_id, fetch_started_at, roms_by_id.keys()
-            )
-            collection_stamp = self._build_final_collection_stamp(
-                unit, chunk_index, chunk_count, collection_member_ids, fetch_started_at
-            )
-
-            # Per-chunk commit: the reporter upserts every fetched ROM of this
-            # chunk into the ``roms`` aggregate (identity + version metadata,
-            # unbound for non-representatives) and binds only the acked
-            # representatives, stamping each ROM's cached ``rom_metadata`` in the
-            # same write UoW (Rom row first, metadata second — FK-safe).
-            # ``chunk_rows`` is this chunk's slice of the live RomM fetch — the
-            # source of ``metadatum`` — so each committed chunk is a crash-safe
-            # checkpoint. The final-chunk ``platform_stamp`` / ``collection_stamp``
-            # (whichever the unit type produces) rides the same UoW.
-            await self._reporter.get().commit_unit_results(
+            await self._commit_chunk(
                 applied,
+                unit,
+                chunk_index,
+                chunk_count,
                 chunk_rows,
-                platform_stamp=platform_stamp,
-                collection_stamp=collection_stamp,
-                # The fetch generation for a PLATFORM unit's rows (#1504), passed on
-                # EVERY chunk so the whole unit shares the generation the final
-                # chunk's stamp records. A collection unit passes None; why is
-                # docs/architecture/database-design.md, the `Rom` row's `last_fetch_id`.
+                roms_by_id,
                 fetch_id=fetch_id,
-                delivered_through=self._delivery_route(unit),
+                collection_member_ids=collection_member_ids,
+                fetch_started_at=fetch_started_at,
             )
             applied_count += len(applied)
             # Only a COMMITTED chunk's items count as done (#1383): an emitted chunk
@@ -329,6 +327,97 @@ class ChunkDispatcher:
 
         box.clear_active_unit()
         return applied_count
+
+    async def _commit_without_emitting(
+        self,
+        unit: WorkUnit,
+        chunks: list[UnitChunk],
+        roms_by_id: dict[int, dict[str, Any]],
+        *,
+        fetch_id: str | None,
+        collection_member_ids: list[int] | None,
+        fetch_started_at: str | None,
+    ) -> int:
+        """Commit each of *chunks* with no binding, for a run whose surface creates no Steam shortcuts.
+
+        Each commit is the one the acked path makes for a chunk the frontend
+        bound nothing in, so every row lands unbound and a binding it already
+        holds is kept. Nothing is emitted and no ack is waited for; the
+        dispatch identity is cleared before the first commit and stays clear,
+        so no ``report_unit_results`` can match a chunk of this unit. Steam's
+        renderer applies nothing, so no chunk is priced against its session
+        budget. Returns the count of delta entries committed, each counted done
+        once its chunk is committed — a cancel returns early with the chunks
+        committed so far.
+        """
+        box = self._sync_state
+        box.unit_complete_event = None
+        box.active_unit_id = None
+        box.active_chunk_index = None
+        committed_count = 0
+        for chunk_index, chunk in enumerate(chunks):
+            if box.is_cancelling():
+                break
+            chunk_rows = [roms_by_id[rid] for rid in chunk.rom_ids if rid in roms_by_id]
+            await self._commit_chunk(
+                {},
+                unit,
+                chunk_index,
+                len(chunks),
+                chunk_rows,
+                roms_by_id,
+                fetch_id=fetch_id,
+                collection_member_ids=collection_member_ids,
+                fetch_started_at=fetch_started_at,
+            )
+            committed_count += len(chunk.emitted)
+            box.run_done_items += len(chunk.emitted)
+        box.clear_active_unit()
+        return committed_count
+
+    async def _commit_chunk(
+        self,
+        rom_id_to_app_id: dict[str, int],
+        unit: WorkUnit,
+        chunk_index: int,
+        chunk_count: int,
+        chunk_rows: list[dict[str, Any]],
+        roms_by_id: dict[int, dict[str, Any]],
+        *,
+        fetch_id: str | None,
+        collection_member_ids: list[int] | None,
+        fetch_started_at: str | None,
+    ) -> None:
+        """Commit one chunk through the reporter, binding *rom_id_to_app_id*, with the unit's stamp on its final chunk.
+
+        The reporter upserts every fetched ROM of this chunk into the ``roms``
+        aggregate (identity + version metadata, unbound for non-representatives)
+        and binds only the representatives *rom_id_to_app_id* names, stamping
+        each ROM's cached ``rom_metadata`` in the same write UoW (Rom row first,
+        metadata second — FK-safe). ``chunk_rows`` is this chunk's slice of the
+        live RomM fetch — the source of ``metadatum`` — so each committed chunk
+        is a crash-safe checkpoint. The final-chunk ``platform_stamp`` /
+        ``collection_stamp`` (whichever the unit type produces) rides the same
+        UoW, its platform checksum over every id in *roms_by_id*.
+        """
+        platform_stamp = self._build_final_platform_stamp(
+            unit, chunk_index, chunk_count, fetch_id, fetch_started_at, roms_by_id.keys()
+        )
+        collection_stamp = self._build_final_collection_stamp(
+            unit, chunk_index, chunk_count, collection_member_ids, fetch_started_at
+        )
+        await self._reporter.get().commit_unit_results(
+            rom_id_to_app_id,
+            chunk_rows,
+            platform_stamp=platform_stamp,
+            collection_stamp=collection_stamp,
+            # The fetch generation for a PLATFORM unit's rows (#1504), passed on
+            # EVERY chunk so the whole unit shares the generation the final
+            # chunk's stamp records. A collection unit passes None; why is
+            # docs/architecture/database-design.md, the `Rom` row's `last_fetch_id`.
+            fetch_id=fetch_id,
+            delivered_through=self._delivery_route(unit),
+        )
 
     async def _wait_for_unit_complete(self, unit: WorkUnit, event: asyncio.Event) -> dict[str, int] | None:
         """Heartbeat-based wait for the active unit's frontend callback.

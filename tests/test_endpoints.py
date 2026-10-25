@@ -104,6 +104,9 @@ _MIGRATION_RULE_WHITELIST: set[str] = {
     # Quick Access entry position — a settings.json-only write, never touches
     # RetroDECK state; the panel reads it on the next render pass of the menu.
     "set_qam_entry_position",
+    # Library surface — a settings.json-only write, never touches RetroDECK
+    # state; the next library sync reads it when it starts.
+    "set_library_surface",
     # Preferred sibling-group region — a settings.json-only write (ADR-0021 §3),
     # never touches RetroDECK state; takes effect on the next sync. Its companion
     # read (distinct regions in the local library) is a pure local DB read.

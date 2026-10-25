@@ -22,6 +22,7 @@ the SteamGridDB pipeline. The exact chunk partition maths is pinned in
 """
 
 import asyncio
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
@@ -947,3 +948,245 @@ class TestThePlaceholderIcon:
 
         (event,) = [c[0][1] for c in emit.call_args_list if c[0][0] == "sync_apply_unit"]
         assert event["icon_placeholder_path"] is None
+
+
+class TestASurfaceThatCreatesNoShortcuts:
+    """Under ``esde`` each chunk is committed with no binding, and nothing reaches the frontend.
+
+    The commit is the one the acked path makes for a chunk the frontend bound
+    nothing in — the same rows, the same final-chunk stamp, the same fetch
+    generation and route, with an empty appId map — so a row lands unbound and a
+    binding it already holds is kept. Nothing is emitted, so no ack is waited for
+    and none may match: the box holds no active unit or chunk while it runs.
+    """
+
+    @staticmethod
+    def _entries() -> list[dict[str, Any]]:
+        return [{"rom_id": rom_id, "sibling_group_key": None} for rom_id in (1, 2, 3)]
+
+    @staticmethod
+    def _units():
+        return [
+            WorkUnit(type="platform", id=7, name="N64", slug="n64", rom_count=3),
+            WorkUnit(
+                type="collection",
+                id="c-9",
+                name="Faves",
+                slug="",
+                rom_count=3,
+                collection_kind="standard",
+                collection_updated_at="2026-01-01T00:00:00",
+                member_rom_ids=(1, 2, 3),
+            ),
+        ]
+
+    @staticmethod
+    def _refuse_to_wait(library) -> None:
+        library.sync._chunk_dispatcher._wait_for_unit_complete = AsyncMock(side_effect=AssertionError("waited"))
+
+    async def _apply(self, library, unit, *, surface):
+        """Drive *unit* through ``apply_unit_in_chunks`` under *surface*; answer each commit's arguments."""
+        dispatcher = library.sync._chunk_dispatcher
+        box = library.sync._box
+        commits: list[dict[str, Any]] = []
+
+        async def capture_commit(rom_id_to_app_id, chunk_rows, **kwargs):
+            commits.append({"app_ids": rom_id_to_app_id, "rows": [r["id"] for r in chunk_rows], **kwargs})
+
+        library.sync._reporter.commit_unit_results = capture_commit  # type: ignore[method-assign]
+        box.sync_state = SyncState.RUNNING
+        box.current_sync_id = "run-surface"
+        box.run_library_surface = surface
+        applied = await dispatcher.apply_unit_in_chunks(
+            unit,
+            unit_index=0,
+            total_units=1,
+            emitted=self._entries(),
+            shortcuts_data=self._entries(),
+            unit_roms=[{"id": e["rom_id"]} for e in self._entries()],
+            new_ids={1, 2, 3},
+            confirmed_cover_sources={},
+            collection_member_ids=[1, 2, 3],
+            fetch_started_at="2026-01-01T00:00:00+00:00",
+        )
+        return applied, commits
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("unit_index", [0, 1], ids=["platform", "collection"])
+    async def test_every_chunk_is_committed_as_the_acked_path_commits_one_that_bound_nothing(
+        self, library, monkeypatch, unit_index
+    ):
+        from services.library import chunk_dispatcher
+
+        monkeypatch.setattr(chunk_dispatcher, "_APPLY_CHUNK_SIZE", 2)
+        unit = self._units()[unit_index]
+        library.sync._chunk_dispatcher._wait_for_unit_complete = _fake_wait_set_event
+        _, acked = await self._apply(library, unit, surface="steam")
+
+        self._refuse_to_wait(library)
+        _, unacked = await self._apply(library, unit, surface="esde")
+
+        assert len(acked) == 2
+        assert unacked == acked
+        assert all(commit["app_ids"] == {} for commit in unacked)
+        stamp_key = "platform_stamp" if unit.type == "platform" else "collection_stamp"
+        assert [commit[stamp_key] is not None for commit in unacked] == [False, True]
+
+    @pytest.mark.asyncio
+    async def test_nothing_is_emitted_waited_for_or_priced_against_steam_s_budget(self, library, emit):
+        dispatcher = library.sync._chunk_dispatcher
+        self._refuse_to_wait(library)
+        gate = AsyncMock(return_value=None)
+        dispatcher._session_budget.maybe_pause_for_budget = gate
+        placeholder = AsyncMock(return_value=None)
+        dispatcher._icon_placeholder_path = placeholder
+
+        _, commits = await self._apply(library, self._units()[0], surface="esde")
+
+        assert len(commits) == 1
+        assert [c for c in emit.call_args_list if c[0][0] == "sync_apply_unit"] == []
+        gate.assert_not_awaited()
+        placeholder.assert_not_awaited()
+        assert library.sync._box.chunks_emitted_this_run == 0
+
+    @pytest.mark.asyncio
+    async def test_no_ack_matches_a_chunk_even_over_an_identity_left_from_before(self, library, monkeypatch):
+        """A run that died mid-emit leaves its identity on the box; the unit clears it before its first commit."""
+        from services.library import chunk_dispatcher
+
+        monkeypatch.setattr(chunk_dispatcher, "_APPLY_CHUNK_SIZE", 1)
+        unit = self._units()[0]
+        box = library.sync._box
+        box.active_unit_id = unit.id
+        box.active_chunk_index = 0
+        box.unit_complete_event = asyncio.Event()
+        self._refuse_to_wait(library)
+        reporter = library.sync._reporter
+        seen: list[tuple[int | str | None, int | None, asyncio.Event | None]] = []
+        answers: list[dict[str, Any]] = []
+
+        async def capture_commit(rom_id_to_app_id, chunk_rows, **kwargs):
+            seen.append((box.active_unit_id, box.active_chunk_index, box.unit_complete_event))
+            answers.append(await reporter.report_unit_results({"1": 4242}, box.current_sync_id, unit.id, len(seen) - 1))
+
+        box.sync_state = SyncState.RUNNING
+        box.current_sync_id = "run-surface"
+        box.run_library_surface = "esde"
+        reporter.commit_unit_results = capture_commit  # type: ignore[method-assign]
+        await library.sync._chunk_dispatcher.apply_unit_in_chunks(
+            unit,
+            unit_index=0,
+            total_units=1,
+            emitted=self._entries(),
+            shortcuts_data=self._entries(),
+            unit_roms=[{"id": e["rom_id"]} for e in self._entries()],
+            new_ids=set(),
+            confirmed_cover_sources={},
+        )
+
+        assert seen == [(None, None, None)] * 3
+        assert answers == [{"success": True, "count": 0, "ignored": True}] * 3
+        assert box.last_unit_results is None
+
+    @pytest.mark.asyncio
+    async def test_it_answers_the_entries_it_committed_and_counts_them_done(self, library, monkeypatch):
+        from services.library import chunk_dispatcher
+
+        monkeypatch.setattr(chunk_dispatcher, "_APPLY_CHUNK_SIZE", 2)
+        self._refuse_to_wait(library)
+        box = library.sync._box
+        box.run_done_items = 5
+
+        applied, _ = await self._apply(library, self._units()[0], surface="esde")
+
+        assert applied == 3
+        assert box.run_done_items == 8
+
+    @pytest.mark.asyncio
+    async def test_a_cancel_at_a_chunk_boundary_keeps_the_chunks_committed_and_tears_the_unit_down(
+        self, library, monkeypatch
+    ):
+        from services.library import chunk_dispatcher
+
+        monkeypatch.setattr(chunk_dispatcher, "_APPLY_CHUNK_SIZE", 1)
+        self._refuse_to_wait(library)
+        box = library.sync._box
+        commits: list[list[int]] = []
+
+        async def cancel_after_first_commit(_rom_id_to_app_id, chunk_rows, **_kwargs):
+            commits.append([r["id"] for r in chunk_rows])
+            box.sync_state = SyncState.CANCELLING
+
+        box.sync_state = SyncState.RUNNING
+        box.current_sync_id = "run-surface"
+        box.run_library_surface = "esde"
+        library.sync._reporter.commit_unit_results = cancel_after_first_commit  # type: ignore[method-assign]
+        applied = await library.sync._chunk_dispatcher.apply_unit_in_chunks(
+            self._units()[0],
+            unit_index=0,
+            total_units=1,
+            emitted=self._entries(),
+            shortcuts_data=self._entries(),
+            unit_roms=[{"id": e["rom_id"]} for e in self._entries()],
+            new_ids=set(),
+            confirmed_cover_sources={},
+        )
+
+        assert commits == [[1]]
+        assert applied == 1
+        assert (box.pending_sync, box.pending_all_roms, box.pending_cover_sources) == ({}, {}, {})
+        assert box.abandoned_chunk is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("surface", ["steam", "both"])
+    async def test_a_surface_that_creates_shortcuts_still_emits_and_waits(self, library, emit, surface):
+        waits: list[int] = []
+
+        async def wait(unit, event):
+            waits.append(unit.id)
+            return await _fake_wait_set_event(unit, event)
+
+        library.sync._chunk_dispatcher._wait_for_unit_complete = wait
+        _, commits = await self._apply(library, self._units()[0], surface=surface)
+
+        assert len([c for c in emit.call_args_list if c[0][0] == "sync_apply_unit"]) == 1
+        assert waits == [7]
+        assert len(commits) == 1
+
+    @pytest.mark.asyncio
+    async def test_the_real_commit_leaves_a_new_row_unbound_and_keeps_a_binding_it_holds(self, library, fake_romm_api):
+        _use_fake_romm(library, fake_romm_api)
+        _seed_platform(
+            fake_romm_api,
+            platform_id=1,
+            name="N64",
+            slug="n64",
+            roms=[
+                {"id": 10, "name": "Bound", "fs_name": "bound.z64"},
+                {"id": 11, "name": "Fresh", "fs_name": "fresh.z64"},
+            ],
+        )
+        _seed_rom_row(library, 10, app_id=1010, platform_slug="n64", name="Renamed on RomM", fs_name="bound.z64")
+        self._refuse_to_wait(library)
+        box = library.sync._box
+        box.sync_state = SyncState.RUNNING
+        box.current_sync_id = "run-surface"
+        box.run_library_surface = "esde"
+
+        unit = WorkUnit(type="platform", id=1, name="N64", slug="n64", rom_count=2)
+        await library.sync._orchestrator._sync_one_unit(
+            unit,
+            sources=library.emulator_sources.read(),
+            unit_index=0,
+            total_units=1,
+            synced_rom_ids=set(),
+            collection_memberships={},
+            platform_rom_ids=set(),
+        )
+
+        with library.uow as uow:
+            assert uow.roms.get(11).shortcut_app_id is None
+            assert uow.roms.get(10).shortcut_app_id == 1010
+            assert uow.roms.get(10).name == "Bound"
+            assert uow.platform_sync_state.get("n64") is not None
+        assert box.committed_app_ids == set()

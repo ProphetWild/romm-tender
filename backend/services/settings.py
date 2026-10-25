@@ -23,6 +23,7 @@ from domain.custom_headers import (
     resolve_custom_headers,
     stored_custom_headers,
 )
+from domain.library_surface import LIBRARY_SURFACES, library_surface
 from domain.sibling_resolution import AUTO_REGION
 from lib.errors import NotConfigured, Refused
 from lib.steam_input_apply import SteamInputApply
@@ -231,6 +232,7 @@ class SettingsService:
             "collection_owner_scope": self._settings.get("collection_owner_scope", "all"),
             "collection_naming_mode": self._settings.get("collection_naming_mode", "merge"),
             "qam_entry_position": self._settings.get("qam_entry_position", "above_decky"),
+            "library_surface": library_surface(self._settings.get("library_surface")),
             "preferred_region": self._settings.get("preferred_region", AUTO_REGION),
             "skip_preview": self._settings.get("skip_preview", False),
             "romm_custom_header_names": [
@@ -433,6 +435,21 @@ class SettingsService:
         if position not in ("above_decky", "below_decky"):
             raise Refused("invalid_position", f"Invalid Quick Access entry position: {position}")
         self._settings["qam_entry_position"] = position
+        self._settings_persister.save_settings()
+        return {"success": True}
+
+    # ── Library surface ─────────────────────────────────────────────────
+
+    def set_library_surface(self, surface: object) -> dict[str, Any]:
+        """Validate and persist where a library sync puts the library (``"steam"`` / ``"esde"`` / ``"both"``).
+
+        Takes effect from the next library sync. An unrecognised value from the
+        untrusted frontend wire is refused with ``invalid_library_surface`` so a
+        bad call cannot corrupt the setting.
+        """
+        if surface not in LIBRARY_SURFACES:
+            raise Refused("invalid_library_surface", f"Invalid library surface: {surface}")
+        self._settings["library_surface"] = surface
         self._settings_persister.save_settings()
         return {"success": True}
 

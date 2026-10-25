@@ -70,6 +70,7 @@ export type WireReason =
   | "invalid_ids"
   | "invalid_install"
   | "invalid_kind"
+  | "invalid_library_surface"
   | "invalid_log_level"
   | "invalid_mode"
   | "invalid_options"
