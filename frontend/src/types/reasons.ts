@@ -113,6 +113,7 @@ export type WireReason =
   | "no_server_save"
   | "no_sgdb_game"
   | "no_stored_header_value"
+  | "not_a_tender_game"
   | "not_in_group"
   | "not_in_library"
   | "not_installed"

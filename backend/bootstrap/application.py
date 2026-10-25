@@ -29,6 +29,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from domain.app_directories import AppDirectories
+    from domain.esde_hook_scripts import EsdeHookAddress
     from domain.update_release import UpdateSource
     from services.protocols import EventEmitter, PanelConnectedFn, SteamInterfaceReader
 
@@ -73,6 +74,7 @@ class Application:
         steps.run("cleanup_leftover_tmp_files", services.leftover_tmp_cleanup_service.cleanup_leftover_tmp_files)
         steps.run("remove_update_leftovers", services.update_install_service.remove_leftovers)
         steps.run("note_update_attempt", services.update_install_service.note_start)
+        steps.run("install_esde_hook_scripts", services.esde_hook_script_service.install_at_start)
         steps.run("record_save_directories", self._start_save_directory_backfill)
         steps.run("run_due_update_checks", self._start_due_update_checks)
         steps.run("shortcut_artwork", self._start_shortcut_artwork)
@@ -86,6 +88,7 @@ class Application:
         await services.sync_service.shutdown()
         await services.esde_media_service.shutdown()
         await services.prune_service.shutdown()
+        await services.esde_hook_service.shutdown()
         await services.download_service.shutdown()
         await services.migration_service.shutdown()
         await services.session_lifecycle_service.shutdown()
@@ -119,13 +122,15 @@ def build_application(
     emit: EventEmitter,
     steam: SteamInterfaceReader,
     panel_connected: PanelConnectedFn,
+    esde_hook_address: EsdeHookAddress,
 ) -> Application:
     """Build every adapter and wire every service into an :class:`Application`.
 
     Runs none of the start-up repairs; the caller does, once it has somewhere
     to record a failure. Settings are loaded and migrated inside
     :func:`bootstrap`, so every adapter that binds the live settings dict binds
-    the migrated one.
+    the migrated one. *esde_hook_address* is where ES-DE's event scripts find
+    this backend, which the entry point decides with the host.
     """
     result = bootstrap(
         directories=directories,
@@ -155,6 +160,7 @@ def build_application(
             launcher=result.launcher,
             update_source=update_source,
             installer_environment=installer_environment,
+            esde_hook_address=esde_hook_address,
         )
     )
     return Application(services, logger=logger, user_agent=result.user_agent)

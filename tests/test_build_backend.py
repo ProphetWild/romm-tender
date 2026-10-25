@@ -13,9 +13,11 @@ from _factories import _make_services_bundle
 
 import main
 from domain.app_directories import AppDirectories
+from domain.esde_hook_scripts import EsdeHookAddress
 from domain.update_release import UpdateSource
 from host import EventSink, HostStatus
 from host.dispatch import route_names
+from host.hooks import ESDE_HOOKS_PREFIX, HOOK_HEADER_FILENAME, HOOK_PORT_FILENAME
 from host.logging_setup import LOG_FILENAME
 from main import Endpoints, build_backend
 
@@ -59,6 +61,9 @@ def _directories_at(tmp_path) -> AppDirectories:
 
 _UPDATE_SOURCE = UpdateSource(release_api="http://127.0.0.1:9/releases/latest", installed_program=False)
 _INSTALLER_ENVIRONMENT = (("TENDER_DATA_DIR", "/data"),)
+_HOOK_ADDRESS = EsdeHookAddress(
+    port_file="/data/esde-hooks/port", header_file="/data/esde-hooks/header", route_prefix="/h/"
+)
 
 
 class TestBuildBackend:
@@ -82,6 +87,7 @@ class TestBuildBackend:
             logger=LOGGER,
             status=status,
             events=events,
+            esde_hook_address=_HOOK_ADDRESS,
         )
         return built, app, status, events, asked
 
@@ -101,6 +107,7 @@ class TestBuildBackend:
                 "loop": asyncio.get_running_loop(),
                 "emit": events.emit,
                 "steam": status.steam,
+                "esde_hook_address": _HOOK_ADDRESS,
             }
         ]
         assert panel_connected() is False
@@ -142,12 +149,25 @@ class TestBuildBackend:
         assert service_answer["result"] == {"success": True}
         assert host_answer["result"]["failed_startup_steps"] == ["prune_orphaned_cover_cache"]
 
-    async def test_no_hook_service_is_built_yet_so_the_host_answers_every_hook_503(
-        self, tmp_path, monkeypatch: pytest.MonkeyPatch
-    ):
-        built, _app, _status, _events, _asked = await self._build(tmp_path, monkeypatch)
+    async def test_every_hook_reaches_the_application_s_hook_service(self, tmp_path, monkeypatch: pytest.MonkeyPatch):
+        built, app, _status, _events, _asked = await self._build(tmp_path, monkeypatch)
+        service = app.services.esde_hook_service
+        service.prepare = AsyncMock(return_value={"success": True, "rom_id": 7})
+        service.finish = AsyncMock(return_value={"success": True, "rom_id": 7})
+        service.select = AsyncMock(return_value={"success": True, "rom_id": 7})
+        service.startup = AsyncMock(return_value={"success": True, "finished": True})
+        assert built.esde_hooks is not None
 
-        assert built.esde_hooks is None
+        answer = await built.esde_hooks["prepare"]({"path": "/roms/a b.sfc", "escaped": "1"})
+        await built.esde_hooks["finish"]({"path": "/roms/a.sfc", "escaped": "0"})
+        await built.esde_hooks["select"]({"path": "/roms/a.sfc"})
+        await built.esde_hooks["startup"]({})
+
+        assert answer == {"success": True, "rom_id": 7}
+        service.prepare.assert_awaited_once_with("/roms/a b.sfc", True)
+        service.finish.assert_awaited_once_with("/roms/a.sfc", False)
+        service.select.assert_awaited_once_with("/roms/a.sfc")
+        service.startup.assert_awaited_once_with()
 
 
 class TestRun:
@@ -190,6 +210,18 @@ class TestRun:
         handed = self._start(tmp_path, monkeypatch)
 
         assert handed["hook_files_dir"] == os.path.join(str(tmp_path / "data"), "esde-hooks")
+
+    def test_the_scripts_read_the_hook_files_the_host_writes_and_call_its_hook_route(
+        self, tmp_path, monkeypatch, restore_root_logger
+    ):
+        handed = self._start(tmp_path, monkeypatch)
+
+        address = handed["build"].keywords["esde_hook_address"]
+        assert address == EsdeHookAddress(
+            port_file=os.path.join(handed["hook_files_dir"], HOOK_PORT_FILENAME),
+            header_file=os.path.join(handed["hook_files_dir"], HOOK_HEADER_FILENAME),
+            route_prefix=ESDE_HOOKS_PREFIX,
+        )
 
     def test_neither_token_reaches_the_log_file(self, tmp_path, monkeypatch, restore_root_logger):
         handed = self._start(tmp_path, monkeypatch)

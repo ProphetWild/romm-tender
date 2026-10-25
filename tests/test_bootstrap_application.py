@@ -13,6 +13,7 @@ from fakes.fake_steam_interface import FakeSteamInterface
 
 from bootstrap import Application, ServicesBundle, WiringConfig, build_application
 from domain.app_directories import AppDirectories
+from domain.esde_hook_scripts import EsdeHookAddress
 from domain.identity import MIN_ROMM_VERSION, PACKAGE_NAME, VERSION
 from domain.update_release import UpdateSource
 from services.library import LibraryService
@@ -38,6 +39,7 @@ _REPAIRS = [
     "cleanup_leftover_tmp_files",
     "remove_update_leftovers",
     "note_update_attempt",
+    "install_esde_hook_scripts",
     "record_save_directories",
     "run_due_update_checks",
     "shortcut_artwork",
@@ -144,6 +146,8 @@ class _Recorded:
             download_service=MagicMock(shutdown=self._async_step("download_service.shutdown")),
             session_lifecycle_service=MagicMock(shutdown=self._async_step("session_lifecycle_service.shutdown")),
             playtime_service=MagicMock(shutdown=self._async_step("playtime_service.shutdown")),
+            esde_hook_script_service=MagicMock(install_at_start=self._step("install_esde_hook_scripts")),
+            esde_hook_service=MagicMock(shutdown=self._async_step("esde_hook_service.shutdown")),
         )
 
 
@@ -162,6 +166,7 @@ _SHUTDOWNS = [
     "sync_service.shutdown",
     "esde_media_service.shutdown",
     "prune_service.shutdown",
+    "esde_hook_service.shutdown",
     "download_service.shutdown",
     "migration_service.shutdown",
     "session_lifecycle_service.shutdown",
@@ -266,6 +271,9 @@ class TestShutdown:
         ]
 
 
+_HOOK_ADDRESS = EsdeHookAddress(
+    port_file="/data/esde-hooks/port", header_file="/data/esde-hooks/header", route_prefix="/h/"
+)
 _UPDATE_SOURCE = UpdateSource(release_api="http://127.0.0.1:9/releases/latest", installed_program=False)
 
 
@@ -297,6 +305,7 @@ class TestBuildApplication:
             emit=emit,
             steam=FakeSteamInterface(),
             panel_connected=panel_connected or _default_panel_connected,
+            esde_hook_address=_HOOK_ADDRESS,
         )
 
     async def test_it_wires_the_services(self, tmp_path):
@@ -333,3 +342,22 @@ class TestBuildApplication:
         assert cfg.runtime.loop is asyncio.get_running_loop()
         assert cfg.runtime.panel_connected is panel_connected
         assert cfg.min_required_version == MIN_ROMM_VERSION
+
+    async def test_the_scripts_are_told_where_the_entry_point_said_es_de_finds_this_backend(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch
+    ):
+        import bootstrap.application
+
+        seen: list[WiringConfig] = []
+        real_wire_services = bootstrap.application.wire_services
+
+        def recording_wire_services(cfg: WiringConfig) -> ServicesBundle:
+            seen.append(cfg)
+            return real_wire_services(cfg)
+
+        monkeypatch.setattr(bootstrap.application, "wire_services", recording_wire_services)
+
+        self._build(tmp_path, FakeEventSink().emit)
+
+        [cfg] = seen
+        assert cfg.esde_hook_address == _HOOK_ADDRESS

@@ -1132,20 +1132,41 @@ class TestSetQamEntryPosition:
 class _RecordingSurfaceListener:
     """Records each surface it is told was stored, with whether it was persisted by then."""
 
-    def __init__(self, settings_persister: MagicMock) -> None:
+    def __init__(self, settings_persister: MagicMock, order: list[str] | None = None, name: str = "") -> None:
         self._settings_persister = settings_persister
+        self._order = order
+        self._name = name
         self.told: list[tuple[str, bool]] = []
 
     async def surface_stored(self, surface: str) -> None:
         self.told.append((surface, self._settings_persister.save_settings.called))
+        if self._order is not None:
+            self._order.append(self._name)
 
 
 class TestSetLibrarySurface:
     @pytest.fixture
     def listener(self, service, settings_persister) -> _RecordingSurfaceListener:
         listener = _RecordingSurfaceListener(settings_persister)
-        service._surface_listener = listener
+        service._surface_listeners = (listener,)
         return listener
+
+    async def test_every_listener_is_told_in_the_order_it_was_handed_in(self, service, settings_persister):
+        order: list[str] = []
+        first = _RecordingSurfaceListener(settings_persister, order, "first")
+        second = _RecordingSurfaceListener(settings_persister, order, "second")
+        service._surface_listeners = (first, second)
+
+        await service.set_library_surface("esde")
+
+        assert order == ["first", "second"]
+        assert first.told == second.told == [("esde", True)]
+
+    async def test_with_no_listener_the_surface_is_still_stored(self, service, settings):
+        service._surface_listeners = ()
+
+        assert await service.set_library_surface("esde") == {"success": True}
+        assert settings["library_surface"] == "esde"
 
     @pytest.mark.parametrize("surface", ["steam", "esde", "both"])
     async def test_every_surface_persists(self, service, settings, settings_persister, surface):

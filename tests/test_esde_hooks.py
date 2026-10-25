@@ -16,6 +16,7 @@ from typing import Any
 
 import pytest
 
+from domain.esde_hook_scripts import hook_scripts
 from domain.refusal import DomainRefused
 from host.dispatch import route_names
 from host.hooks import answer_hook
@@ -23,7 +24,7 @@ from host.protocol import REASON_BACKEND_EXCEPTION, TYPE_ERROR
 from lib.errors import Refused, RommConnectionError, RommNotFoundError, classify_error
 from lib.http_messages import parse_request_head
 from lib.partial_failure import PartialFailure
-from main import Endpoints, EsdeHooks, esde_hook_routes
+from main import Endpoints, EsdeHooks, esde_hook_address, esde_hook_routes
 
 LOGGER = logging.getLogger("test_esde_hooks")
 
@@ -208,3 +209,16 @@ class TestAsAScriptMeetsThem:
 
         assert answered.status == 500
         assert json.loads(answered.body)["reason"] == REASON_BACKEND_EXCEPTION
+
+
+class TestTheScriptsCallTheseHooks:
+    def test_every_script_tender_writes_calls_a_hook_answered_here_and_every_hook_has_one(self):
+        scripts = hook_scripts(esde_hook_address("/data/esde-hooks"))
+
+        assert {script.hook for script in scripts} == set(_routes(_RecordingHookService()))
+
+    @pytest.mark.parametrize("hook", ["prepare", "finish"])
+    def test_a_hook_that_reads_escaped_is_sent_it(self, hook):
+        [script] = [script for script in hook_scripts(esde_hook_address("/data/esde-hooks")) if script.hook == hook]
+
+        assert '--data-urlencode "escaped=1"' in script.text

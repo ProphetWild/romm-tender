@@ -31,6 +31,7 @@ import { beginEtaRun } from "./utils/syncEta";
 import { syncFailedMessage } from "./utils/syncFailed";
 import { updateDownload, getDownloadState, removeDownload } from "./utils/downloadStore";
 import { handleGlobalDownloadFailure } from "./utils/downloadFailure";
+import { watchEsdeToasts } from "./utils/esdeToasts";
 import { registerGameDetailPatch } from "./bigpicture/patches/gameDetailPatch";
 import { registerRomMAppId, unregisterRomMAppId } from "./utils/rommAppIds";
 import { registerMetadataPatches, applyAllPlaytime, applyAllMetadata } from "./utils/metadataPatches";
@@ -1091,6 +1092,8 @@ const tender = definePanel(() => {
   addEventListener<DownloadFailedEvent>("download_failed", (data: DownloadFailedEvent) =>
     handleGlobalDownloadFailure(data, { getDownloadState, updateDownload }, toaster),
   );
+
+  watchEsdeToasts();
 
   addEventListener<{ old_path: string; new_path: string; cleared?: boolean }>("retrodeck_path_changed", (data) => {
     // Backend auto-clears the migration when the new path matches a previous

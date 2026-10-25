@@ -49,10 +49,11 @@ from domain.app_directories import (
     AppDirectories,
     resolve_directories,
 )
+from domain.esde_hook_scripts import EsdeHookAddress
 from domain.identity import VERSION
 from domain.update_install import installer_environment
 from domain.update_release import resolve_update_source
-from host import EventSink, HostStatus, configure_stderr_logging
+from host import HOOK_FILES_DIRNAME, EventSink, HostStatus, configure_stderr_logging
 
 BUILT = 0
 NOT_BUILT = 1
@@ -94,8 +95,9 @@ def check(argv: list[str]) -> int:
     try:
         # The backend's own entry, which the build alone never reaches; importing
         # it starts nothing, since its start sits behind ``__name__ == "__main__"``.
-        importlib.import_module("main")
-        asyncio.run(_build_on_copies(directories, user_home, logger))
+        main = importlib.import_module("main")
+        hook_address = main.esde_hook_address(os.path.join(directories.data_dir, HOOK_FILES_DIRNAME))
+        asyncio.run(_build_on_copies(directories, user_home, logger, hook_address))
     except Exception:
         logger.exception(f"check: {VERSION} could not be built")
         return NOT_BUILT
@@ -134,7 +136,9 @@ def _written_roots(directories: AppDirectories) -> tuple[str, ...]:
     )
 
 
-async def _build_on_copies(directories: AppDirectories, user_home: str, logger: logging.Logger) -> None:
+async def _build_on_copies(
+    directories: AppDirectories, user_home: str, logger: logging.Logger, hook_address: EsdeHookAddress
+) -> None:
     """Build the application exactly as ``build_backend`` in ``main.py`` does, and run nothing of it."""
     events = EventSink(logger)
     build_application(
@@ -147,6 +151,7 @@ async def _build_on_copies(directories: AppDirectories, user_home: str, logger: 
         emit=events.emit,
         steam=HostStatus().steam,
         panel_connected=lambda: events.connected,
+        esde_hook_address=hook_address,
     )
 
 

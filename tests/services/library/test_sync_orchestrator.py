@@ -3987,6 +3987,7 @@ class TestTheRunIsHeldUntilItEnds:
                 update_install_service=MagicMock(shutdown=AsyncMock()),
                 esde_media_service=MagicMock(shutdown=AsyncMock(side_effect=next_shutdown)),
                 prune_service=MagicMock(shutdown=AsyncMock()),
+                esde_hook_service=MagicMock(shutdown=AsyncMock()),
                 download_service=MagicMock(shutdown=AsyncMock()),
                 migration_service=MagicMock(shutdown=AsyncMock()),
                 session_lifecycle_service=MagicMock(shutdown=AsyncMock()),

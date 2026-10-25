@@ -4,7 +4,7 @@ Each Protocol owns the raw POSIX-style file operations one service
 needs against one logical subtree (cover art, ROM downloads, the
 launcher download queue, firmware/BIOS files, RetroDECK migration
 flows, installed ROMs, save files, SteamGridDB artwork cache, ES-DE's
-stand-ins, media and gamelists).
+stand-ins, media, gamelists and event scripts).
 Implementations live in adapters; services see only the I/O seams.
 
 Implementations are synchronous — services that call from an async
@@ -197,6 +197,23 @@ class EsdeGamelistIndexStore(Protocol):
     def read(self) -> dict[str, SystemGamelist]: ...
 
     def write(self, index: Mapping[str, SystemGamelist]) -> None: ...
+
+
+class EsdeHookScriptStore(Protocol):
+    """Tender's event scripts in ES-DE's scripts folder; only a script carrying Tender's marker is replaced or removed.
+
+    Each answers whether it changed anything: ``install`` writes nothing where
+    anything else is at the path, and ``remove`` removes nothing there. Both
+    raise ``OSError`` where the change cannot be made.
+    """
+
+    def install(self, path: str, text: str) -> bool:
+        """Write *text* at *path* as an executable script, where nothing is there or a script of Tender's is."""
+        ...
+
+    def remove(self, path: str) -> bool:
+        """Remove *path* if it is a script of Tender's."""
+        ...
 
 
 class UpdateStagingStore(Protocol):

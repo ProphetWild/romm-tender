@@ -33,6 +33,10 @@ from services.emulator_sources import EmulatorSourcesService, EmulatorSourcesSer
 from services.esde import (
     EsdeGamelistService,
     EsdeGamelistServiceConfig,
+    EsdeHookScriptService,
+    EsdeHookScriptServiceConfig,
+    EsdeHookService,
+    EsdeHookServiceConfig,
     EsdeLibraryPass,
     EsdeLibraryPassConfig,
     EsdeMediaService,
@@ -76,6 +80,7 @@ if TYPE_CHECKING:
     from typing import Any
 
     from domain.app_directories import AppDirectories
+    from domain.esde_hook_scripts import EsdeHookAddress
     from domain.update_release import UpdateSource
     from lib.errors import Refused
     from models.shortcut_launcher import ShortcutLauncher
@@ -111,7 +116,9 @@ class WiringConfig:
     installed program — handed to ``bootstrap()`` too. ``installer_environment``
     is the third: the variables an installer started from the panel runs with,
     resolved by the entry point from this process's environment and
-    directories.
+    directories. ``esde_hook_address`` is where ES-DE's event scripts find this
+    backend, which only the entry point knows: it decides where the host writes
+    the files they read.
     """
 
     adapters: AdapterBundle
@@ -123,6 +130,7 @@ class WiringConfig:
     launcher: ShortcutLauncher
     update_source: UpdateSource
     installer_environment: tuple[tuple[str, str], ...]
+    esde_hook_address: EsdeHookAddress
 
 
 @dataclass(frozen=True)
@@ -169,6 +177,8 @@ class ServicesBundle:
     esde_stand_in_service: EsdeStandInService
     esde_media_service: EsdeMediaService
     esde_gamelist_service: EsdeGamelistService
+    esde_hook_script_service: EsdeHookScriptService
+    esde_hook_service: EsdeHookService
 
 
 def wire_services(cfg: WiringConfig) -> ServicesBundle:
@@ -704,6 +714,18 @@ def wire_services(cfg: WiringConfig) -> ServicesBundle:
         ),
     )
 
+    esde_hook_script_service = EsdeHookScriptService(
+        config=EsdeHookScriptServiceConfig(
+            store=cfg.adapters.esde_hook_scripts,
+            retrodeck_folders=cfg.callbacks.retrodeck_folders,
+            address=cfg.esde_hook_address,
+            settings=cfg.stores.settings,
+            loop=cfg.runtime.loop,
+            logger=cfg.runtime.logger,
+            log_debug=cfg.callbacks.log_debug,
+        ),
+    )
+
     settings_service = SettingsService(
         config=SettingsServiceConfig(
             settings=cfg.stores.settings,
@@ -712,7 +734,7 @@ def wire_services(cfg: WiringConfig) -> ServicesBundle:
             settings_persister=cfg.callbacks.settings_persister,
             steam_config=cfg.adapters.steam_config,
             conflict_rules=conflict_rules,
-            surface_listener=esde_library_pass,
+            surface_listeners=(esde_library_pass, esde_hook_script_service),
         ),
     )
 
@@ -845,6 +867,25 @@ def wire_services(cfg: WiringConfig) -> ServicesBundle:
             update_in_progress=update_in_progress_binding.get,
             logger=cfg.runtime.logger,
             conflict_rules=conflict_rules,
+        ),
+    )
+
+    esde_hook_service = EsdeHookService(
+        config=EsdeHookServiceConfig(
+            downloads=download_service,
+            saves=save_sync_service,
+            session_start=playtime_service,
+            session_end=session_lifecycle_service,
+            stand_ins=esde_stand_in_service,
+            resolve_path=cfg.adapters.resolve_path,
+            on_demand_media=esde_media_service,
+            pending_gamelists=esde_gamelist_service,
+            uow_factory=cfg.callbacks.uow_factory,
+            emit=cfg.runtime.emit,
+            clock=cfg.runtime.clock,
+            loop=cfg.runtime.loop,
+            logger=cfg.runtime.logger,
+            log_debug=cfg.callbacks.log_debug,
         ),
     )
 
@@ -998,4 +1039,6 @@ def wire_services(cfg: WiringConfig) -> ServicesBundle:
         esde_stand_in_service=esde_stand_in_service,
         esde_media_service=esde_media_service,
         esde_gamelist_service=esde_gamelist_service,
+        esde_hook_script_service=esde_hook_script_service,
+        esde_hook_service=esde_hook_service,
     )

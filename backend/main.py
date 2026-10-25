@@ -19,12 +19,16 @@ _CODE_DIR_FALLBACK = os.path.dirname(backend_dir)
 
 from bootstrap import Application, build_application
 from domain.app_directories import AppDirectories, resolve_directories
+from domain.esde_hook_scripts import EsdeHookAddress
 from domain.identity import VERSION
 from domain.refusal import DomainRefused
 from domain.update_install import installer_environment
 from domain.update_release import UpdateSource, resolve_update_source
 from host import (
+    ESDE_HOOKS_PREFIX,
     HOOK_FILES_DIRNAME,
+    HOOK_HEADER_FILENAME,
+    HOOK_PORT_FILENAME,
     LOCK_FILENAME,
     PORT_FILENAME,
     AlreadyRunningError,
@@ -1223,11 +1227,13 @@ async def build_backend(
     logger: logging.Logger,
     status: HostStatus,
     events: EventSink,
+    esde_hook_address: EsdeHookAddress,
 ) -> BackendBuild:
     """Build the :class:`Application`, run its start-up repairs, and answer with what the host needs of it.
 
     A start-up repair that fails is recorded on *status*, which is where
-    ``get_host_status`` reads it from.
+    ``get_host_status`` reads it from. *esde_hook_address* is where ES-DE's
+    event scripts find this backend (:func:`esde_hook_address`).
     """
     app = build_application(
         directories=directories,
@@ -1239,25 +1245,25 @@ async def build_backend(
         emit=events.emit,
         steam=status.steam,
         panel_connected=lambda: events.connected,
+        esde_hook_address=esde_hook_address,
     )
     app.run_startup_repairs(status.record_failed_step)
     logger.info("Tender backend loaded")
-    hook_service = _esde_hook_service()
     return BackendBuild(
         dispatcher=CallDispatcher(Endpoints(app, status), logger),
         server_identity=app.user_agent,
         shutdown=app.shutdown,
-        esde_hooks=None if hook_service is None else esde_hook_routes(EsdeHooks(hook_service)),
+        esde_hooks=esde_hook_routes(EsdeHooks(app.services.esde_hook_service)),
     )
 
 
-def _esde_hook_service() -> EsdeHookHandler | None:
-    """The service ES-DE's hooks call, or ``None``, which the host answers with ``503`` on every hook.
-
-    No such service is built yet; this is where :func:`build_backend` takes it
-    from once one is.
-    """
-    return None
+def esde_hook_address(hook_files_dir: str) -> EsdeHookAddress:
+    """Where ES-DE's event scripts find this backend: the host's two hook files in *hook_files_dir*, and its route."""
+    return EsdeHookAddress(
+        port_file=os.path.join(hook_files_dir, HOOK_PORT_FILENAME),
+        header_file=os.path.join(hook_files_dir, HOOK_HEADER_FILENAME),
+        route_prefix=ESDE_HOOKS_PREFIX,
+    )
 
 
 @_translating_refusals
@@ -1331,6 +1337,8 @@ def run() -> int:
     logger.info(f"host: code {directories.code_dir}, data {directories.data_dir}, cache {directories.cache_dir}")
     status = HostStatus()
     events = EventSink(logger)
+    # Not beside the port file: ES-DE cannot read there (``host.hooks``).
+    hook_files_dir = os.path.join(directories.data_dir, HOOK_FILES_DIRNAME)
     build = functools.partial(
         build_backend,
         directories=directories,
@@ -1340,6 +1348,7 @@ def run() -> int:
         logger=logger,
         status=status,
         events=events,
+        esde_hook_address=esde_hook_address(hook_files_dir),
     )
 
     # Handed in, never searched for: a host that looked for its own build
@@ -1361,8 +1370,7 @@ def run() -> int:
                 logger=logger,
                 token=token,
                 hook_token=hook_token,
-                # Not beside the port file: ES-DE cannot read there (``host.hooks``).
-                hook_files_dir=os.path.join(directories.data_dir, HOOK_FILES_DIRNAME),
+                hook_files_dir=hook_files_dir,
                 injection=InjectionSetup.from_environment(
                     os.environ,
                     static_root=static_root,

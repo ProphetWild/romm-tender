@@ -67,6 +67,7 @@ from bootstrap import (
     wire_services,
 )
 from domain.app_directories import AppDirectories
+from domain.esde_hook_scripts import EsdeHookAddress, hook_scripts
 from domain.identity import MIN_ROMM_VERSION, PACKAGE_NAME, VERSION
 from domain.session_budget import EFFECTIVE_CEILING_KB
 from domain.sync_run_kind import SyncRunKind
@@ -80,6 +81,7 @@ from services.data_inventory import DataInventoryService
 from services.disc import DiscService
 from services.downloads import DownloadService
 from services.emulator_sources import EmulatorSourcesService
+from services.esde import EsdeHookScriptService, EsdeHookService
 from services.firmware import FirmwareService
 from services.game_process import GameProcessService
 from services.leftover_tmp_cleanup import LeftoverTmpCleanupService
@@ -126,6 +128,9 @@ def _directories_at(tmp_path) -> AppDirectories:
     )
 
 
+_HOOK_ADDRESS = EsdeHookAddress(
+    port_file="/data/esde-hooks/port", header_file="/data/esde-hooks/header", route_prefix="/h/"
+)
 # A release API nothing answers on: bootstrap builds the adapter and never calls it.
 _UPDATE_SOURCE = UpdateSource(release_api="http://127.0.0.1:9/releases/latest", installed_program=False)
 
@@ -348,6 +353,7 @@ class TestTheCacheRootAndTheDataRootStayApart:
                 launcher=result.launcher,
                 update_source=_UPDATE_SOURCE,
                 installer_environment=(),
+                esde_hook_address=_HOOK_ADDRESS,
             )
         )
 
@@ -725,6 +731,7 @@ class TestWireServices:
             "esde_gamelist_files": FakeEsdeGamelistFiles(),
             "esde_gamelist_index": FakeEsdeGamelistIndex(),
             "esde_running": FakeEsdeRunning(),
+            "esde_hook_scripts": MagicMock(),
             "panel_connected": MagicMock(),
         }
 
@@ -780,6 +787,7 @@ class TestWireServices:
                 esde_gamelist_files=deps["esde_gamelist_files"],
                 esde_gamelist_index=deps["esde_gamelist_index"],
                 esde_running=deps["esde_running"],
+                esde_hook_scripts=deps["esde_hook_scripts"],
             ),
             stores=StateBundle(
                 settings=deps["settings"],
@@ -813,6 +821,7 @@ class TestWireServices:
             launcher=deps["launcher"],
             update_source=_UPDATE_SOURCE,
             installer_environment=(),
+            esde_hook_address=_HOOK_ADDRESS,
         )
 
     def test_returns_all_services(self, tmp_path):
@@ -882,7 +891,7 @@ class TestWireServices:
     def test_returns_expected_services(self, tmp_path):
         deps = self._make_deps(tmp_path)
         result = wire_services(self._make_config(deps))
-        assert len(fields(result)) == 40
+        assert len(fields(result)) == 42
         assert all(getattr(result, field.name) is not None for field in fields(result))
         assert isinstance(result.prune_conflicts, PruneConflicts)
         assert isinstance(result.core_service, CoreService)
@@ -910,7 +919,7 @@ class TestWireServices:
 
         library = result.sync_service._orchestrator._esde_stand_ins
         assert isinstance(library, EsdeLibraryPass)
-        assert result.settings_service._surface_listener is library
+        assert result.settings_service._surface_listeners == (library, result.esde_hook_script_service)
         stand_ins = library._stand_ins
         media = library._media
         assert media is result.esde_media_service
@@ -946,6 +955,33 @@ class TestWireServices:
         assert result.game_detail_service._stand_ins is stand_ins
         result.download_service._download_in_progress.add(7)
         assert stand_ins._active_downloads() == {7}
+        deps["loop"].close()
+
+    def test_es_des_hooks_reach_the_downloads_the_saves_and_the_sessions_two_ends(self, tmp_path):
+        deps = self._make_deps(tmp_path)
+        result = wire_services(self._make_config(deps))
+        hooks = result.esde_hook_service
+
+        assert isinstance(hooks, EsdeHookService)
+        assert hooks._downloads is result.download_service
+        assert hooks._saves is result.save_sync_service
+        assert hooks._session_start is result.playtime_service
+        assert hooks._session_end is result.session_lifecycle_service
+        assert hooks._stand_ins is result.esde_stand_in_service
+        assert hooks._resolve_path is deps["resolve_path"]
+        assert hooks._media is result.esde_media_service
+        assert hooks._gamelists is result.esde_gamelist_service
+        deps["loop"].close()
+
+    def test_es_des_scripts_are_written_for_the_address_the_entry_point_gave(self, tmp_path):
+        deps = self._make_deps(tmp_path)
+        result = wire_services(self._make_config(deps))
+        scripts = result.esde_hook_script_service
+
+        assert isinstance(scripts, EsdeHookScriptService)
+        assert scripts._store is deps["esde_hook_scripts"]
+        assert scripts._retrodeck_folders is deps["retrodeck_folders"]
+        assert scripts._scripts == hook_scripts(_HOOK_ADDRESS)
         deps["loop"].close()
 
     def test_the_artwork_job_reads_the_cleanup_the_sync_and_the_removal_it_yields_to(self, tmp_path):

@@ -19,7 +19,7 @@ them from here and never from a submodule.
 from host.access import new_token
 from host.dispatch import CallDispatcher
 from host.events import EventSink
-from host.hooks import HOOK_FILES_DIRNAME, HookFn
+from host.hooks import ESDE_HOOKS_PREFIX, HOOK_FILES_DIRNAME, HOOK_HEADER_FILENAME, HOOK_PORT_FILENAME, HookFn
 from host.inject import InjectionSetup
 from host.logging_setup import configure_logging, configure_stderr_logging
 from host.route import route
@@ -28,7 +28,10 @@ from host.single_instance import LOCK_FILENAME, PORT_FILENAME
 from host.status import HostStatus
 
 __all__ = [
+    "ESDE_HOOKS_PREFIX",
     "HOOK_FILES_DIRNAME",
+    "HOOK_HEADER_FILENAME",
+    "HOOK_PORT_FILENAME",
     "LOCK_FILENAME",
     "PORT_FILENAME",
     "AlreadyRunningError",

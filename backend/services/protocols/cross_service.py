@@ -13,6 +13,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Protocol
 
 if TYPE_CHECKING:
+    import asyncio
     from collections.abc import Callable, Collection
     from contextlib import AbstractAsyncContextManager
 
@@ -925,9 +926,11 @@ class EsdeStandInGuard(Protocol):
 class LibrarySurfaceListener(Protocol):
     """What is told each time the library surface setting is stored, after it is persisted.
 
-    The composition root satisfies this with ``EsdeLibraryPass``, which
+    The composition root hands the settings ``EsdeLibraryPass``, which
     removes every stand-in and every media link, and drops what waits to be
-    written into a gamelist, once the surface stored writes no ES-DE.
+    written into a gamelist, once the surface stored writes no ES-DE; then
+    ``EsdeHookScriptService``, which writes ES-DE's event scripts while it
+    does and removes them once it does not.
     """
 
     async def surface_stored(self, surface: LibrarySurface) -> None: ...
@@ -956,6 +959,58 @@ class EsdePendingGamelists(Protocol):
     """
 
     async def write_pending(self) -> None: ...
+
+
+class LaunchDownloader(Protocol):
+    """What a start from ES-DE asks of the downloads: one started, and the task it runs in.
+
+    The composition root satisfies this with ``DownloadService``.
+    ``start_download`` answers a started download, or the partial failure its
+    gate returns, and raises its refusals, the gate's questions among them
+    (``DownloadTargetGateFn``). ``task_for_rom`` is the task that owns a
+    started download until its install is written, it fails or it is
+    cancelled; ``None`` where none runs.
+    """
+
+    async def start_download(self, rom_id: int) -> dict[str, Any] | PartialFailure: ...
+
+    def task_for_rom(self, rom_id: int) -> asyncio.Task[None] | None: ...
+
+
+class LaunchSaveSync(Protocol):
+    """What a start from ES-DE asks of the save sync before the game runs: its slot, confirmed, and the pull.
+
+    The composition root satisfies this with ``SaveService``.
+    ``is_save_tracking_configured`` reads local state through a Unit of Work, so
+    a caller on the loop runs it off the loop; the other three are the
+    endpoints of the same names, each checking its own conflict rules.
+    """
+
+    def is_save_tracking_configured(self, rom_id: int) -> dict[str, Any]: ...
+
+    async def get_save_setup_info(self, rom_id: int) -> dict[str, Any]: ...
+
+    async def confirm_slot_choice(self, rom_id: int, chosen_slot: str | None) -> dict[str, Any]: ...
+
+    async def pre_launch_sync(self, rom_id: int) -> dict[str, Any]: ...
+
+
+class SessionStartRecorder(Protocol):
+    """Opens a game's play session; the composition root satisfies this with ``PlaytimeService``."""
+
+    async def record_session_start(self, rom_id: int) -> dict[str, Any]: ...
+
+
+class SessionFinalizer(Protocol):
+    """Ends a game's play session and runs its post-exit sync, as ``finalize_game_session`` does.
+
+    The composition root satisfies this with ``SessionLifecycleService``,
+    whose answer is a dataclass the caller hands on as ``dataclasses.asdict``
+    makes it, which is the endpoint's answer too. Raises the refusal of its
+    conflict rules.
+    """
+
+    async def finalize(self, rom_id: int) -> Any: ...
 
 
 class ShortcutArtworkJob(Protocol):

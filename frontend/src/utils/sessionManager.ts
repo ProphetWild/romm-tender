@@ -360,7 +360,7 @@ async function handleGameStop(stoppedAppId: number): Promise<void> {
   );
 }
 
-const PRUNE_ACTIVE_FINALIZE_TOAST_BODY =
+export const PRUNE_ACTIVE_FINALIZE_TOAST_BODY =
   "Playtime and saves for this session were not synced — a removed-game cleanup was running";
 
 function applyFinalizeResult(

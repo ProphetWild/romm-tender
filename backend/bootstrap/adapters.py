@@ -33,6 +33,7 @@ from adapters.emulator_sources import EmulatorSourcesAdapter
 from adapters.es_find_rules import EsFindRulesAdapter
 from adapters.esde_gamelist_files import EsdeGamelistFilesAdapter
 from adapters.esde_gamelist_index import EsdeGamelistIndexAdapter
+from adapters.esde_hook_scripts import EsdeHookScriptsAdapter
 from adapters.esde_media_files import EsdeMediaFilesAdapter
 from adapters.esde_media_index import EsdeMediaIndexAdapter
 from adapters.esde_process import EsdeProcessAdapter
@@ -101,6 +102,7 @@ if TYPE_CHECKING:
         EmulatorSourcesReader,
         EsdeGamelistIndexStore,
         EsdeGamelistStore,
+        EsdeHookScriptStore,
         EsdeMediaIndexStore,
         EsdeMediaStore,
         EsdeRunningFn,
@@ -225,6 +227,7 @@ class AdapterBundle:
     esde_gamelist_files: EsdeGamelistStore
     esde_gamelist_index: EsdeGamelistIndexStore
     esde_running: EsdeRunningFn
+    esde_hook_scripts: EsdeHookScriptStore
 
 
 @dataclass(frozen=True)
@@ -488,6 +491,7 @@ def bootstrap(
     esde_gamelist_files = EsdeGamelistFilesAdapter()
     esde_gamelist_index = EsdeGamelistIndexAdapter(data_dir=directories.data_dir, logger=logger)
     esde_running = EsdeProcessAdapter()
+    esde_hook_scripts = EsdeHookScriptsAdapter()
     transient_units = SystemdRunAdapter()
     journal = JournalctlAdapter(log_debug=debug_logger)
     game_process = GameProcessAdapter()
@@ -569,6 +573,7 @@ def bootstrap(
         esde_gamelist_files=esde_gamelist_files,
         esde_gamelist_index=esde_gamelist_index,
         esde_running=esde_running,
+        esde_hook_scripts=esde_hook_scripts,
     )
     stores = StateBundle(
         settings=settings,

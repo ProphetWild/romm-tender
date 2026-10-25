@@ -189,7 +189,7 @@ def build_contract_harness(tmp_path: Any, *, installed_program: bool = False) ->
     between ``bootstrap()`` and ``wire_services()``, and runs none of the
     start-up repairs or the shutdown.
     """
-    from main import Endpoints
+    from main import Endpoints, esde_hook_address
 
     logger = logging.getLogger("contract")
 
@@ -315,6 +315,7 @@ def build_contract_harness(tmp_path: Any, *, installed_program: bool = False) ->
         launcher=result.launcher,
         update_source=dataclasses.replace(_UPDATE_SOURCE, installed_program=installed_program),
         installer_environment=(),
+        esde_hook_address=esde_hook_address(str(tmp_path / "data" / "esde-hooks")),
     )
     services = wire_services(cfg)
 
