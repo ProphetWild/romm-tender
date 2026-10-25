@@ -141,7 +141,9 @@ def _parse_fields(lines: Sequence[bytes]) -> dict[str, str]:
             raise HttpParseError("header line is not decodable") from exc
         name, separator, value = field.partition(":")
         if not separator or not name or name != name.strip():
-            raise HttpParseError(f"malformed header line: {field!r}")
+            # The line is described, never quoted: the refusal is logged, and a
+            # header line can carry the hook token.
+            raise HttpParseError(f"malformed header line of {len(field)} characters")
         key = name.lower()
         stripped = value.strip()
         headers[key] = f"{headers[key]}, {stripped}" if key in headers else stripped

@@ -72,6 +72,17 @@ class TestParseRequestHead:
         with pytest.raises(HttpParseError, match=why):
             parse_request_head(raw)
 
+    @pytest.mark.parametrize(
+        "line",
+        [b"X-Tender-Hook-Token : s3cr3t", b"X-Tender-Hook-Token s3cr3t", b": s3cr3t"],
+    )
+    def test_a_malformed_header_line_is_refused_without_its_text(self, line):
+        """The refusal is logged, and a header line can carry a token."""
+        with pytest.raises(HttpParseError) as refused:
+            parse_request_head(b"GET /hooks/esde/prepare HTTP/1.1\r\n" + line + b"\r\n")
+
+        assert "s3cr3t" not in str(refused.value)
+
     def test_it_refuses_obsolete_line_folding(self):
         """RFC 9112 §5.2 requires a server to reject a fold, not to guess at it."""
         with pytest.raises(HttpParseError, match="obsolete line folding"):
