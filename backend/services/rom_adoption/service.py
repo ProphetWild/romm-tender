@@ -49,14 +49,13 @@ from domain.rom_candidates import DIR, FILE
 from domain.rom_files import (
     detect_launch_file,
     is_multi_file_download,
-    resolve_extract_dir_name,
-    resolve_local_file_name,
-    synthetic_rom_name,
+    safe_extract_dir_name,
+    safe_local_file_name,
 )
 from domain.served_shape import replace_covers, served_shapes, unpacked_manifest
 from lib.background_tasks import BackgroundTasks
 from lib.errors import Refused, RommApiError, classify_error, romm_error_log_level
-from lib.path_safety import PathTraversalError, coerce_safe_component, is_inside_folder, safe_join
+from lib.path_safety import PathTraversalError, is_inside_folder, safe_join
 from services.rom_adoption._target import Target as _Target
 from services.rom_adoption.renamer import AdoptionIncomplete, AdoptionRenamer, AdoptionRenamerConfig
 from services.rom_adoption.search import CandidateSearch, CandidateSearchConfig
@@ -1003,16 +1002,14 @@ class RomAdoptionService:
         if isinstance(folder, FolderRefused):
             return folder
         roms_dir = folder
-        fallback = synthetic_rom_name(rom_detail)
         shapes = served_shapes(rom_detail)
-        dir_name, _changed = coerce_safe_component(resolve_extract_dir_name(rom_detail), fallback)
+        dir_name = safe_extract_dir_name(rom_detail).name
         dir_target = _Target(
             path=os.path.join(roms_dir, dir_name), system=system, is_multi=True, manifest_name=dir_name
         )
         if FILE not in shapes:
             return dir_target
-        local_name, _missing = resolve_local_file_name(rom_detail)
-        name, _changed = coerce_safe_component(local_name, fallback)
+        name = safe_local_file_name(rom_detail).name
         manifest = server_manifest(rom_detail)
         file_target = _Target(
             path=os.path.join(roms_dir, name),

@@ -20,6 +20,7 @@ from _vendor.atlas.installations import RetroDeck
 from adapters import retrodeck_folders
 from adapters.emulator_sources import EmulatorSourcesAdapter
 from adapters.retrodeck_folders import RetroDeckFoldersAdapter
+from domain.esde_folders import EsdeFolders
 from domain.retrodeck_folders import EveryFolderRefused, FindingRefused, FolderRefused, MoveRoots
 
 _MARKER = Path(".var") / "app" / "net.retrodeck.retrodeck" / "config" / "retrodeck" / "retrodeck.json"
@@ -254,6 +255,81 @@ class TestADownloadNeedsRetroDeck:
         assert refused.details["path"] == str(tmp_path / "other-drive" / "roms")
 
 
+def _esde_folders_under(rd_home: Path) -> EsdeFolders:
+    return EsdeFolders(
+        gamelists=_real(rd_home / "ES-DE" / "gamelists"),
+        scripts=_real(rd_home / "ES-DE" / "scripts"),
+        downloaded_media=_real(rd_home / "ES-DE" / "downloaded_media"),
+    )
+
+
+_ESDE_SWITCHED_OFF = "Games in ES-DE need RetroDECK, which is switched off in Settings › Emulator sources."
+
+
+def _refused(answer: object) -> FolderRefused:
+    assert isinstance(answer, FolderRefused), answer
+    return answer
+
+
+class TestEsDesFoldersAreJoinedOntoRetroDecksHome:
+    """The one set of folders built from a root: ES-DE's own, below the home the resolver read."""
+
+    def test_they_lie_in_es_de_s_folder_below_the_home_retrodeck_s_settings_name(self, tree, tmp_path):
+        rd_home = tree.set_up(tmp_path / "run" / "media" / "sdcard" / "retrodeck")
+
+        assert tree.adapter().esde_folders() == _esde_folders_under(rd_home)
+
+    def test_the_home_and_es_de_s_folder_are_symlink_resolved(self, tree, tmp_path):
+        real = tree.set_up(tmp_path / "real" / "retrodeck")
+        link = tmp_path / "linked"
+        link.symlink_to(tmp_path / "real")
+        tree.marker({**_every_path(link / "retrodeck")})
+        config = tmp_path / "flatpak-config" / "ES-DE"
+        config.mkdir(parents=True)
+        (real / "ES-DE").symlink_to(config)
+
+        folders = tree.adapter().esde_folders()
+
+        assert folders == EsdeFolders(
+            gamelists=_real(config / "gamelists"),
+            scripts=_real(config / "scripts"),
+            downloaded_media=_real(config / "downloaded_media"),
+        )
+
+    def test_without_retrodeck_they_are_refused_with_their_sentence(self, tree):
+        refused = tree.adapter().esde_folders()
+
+        assert isinstance(refused, FolderRefused)
+        assert refused.reason == "retrodeck_not_installed"
+        assert refused.message == "Games in ES-DE need RetroDECK, which is not installed."
+
+    def test_switched_off_they_are_refused_with_their_sentence(self, tree, tmp_path):
+        tree.set_up(tmp_path / "retrodeck")
+
+        refused = tree.adapter(switched_off=True).esde_folders()
+
+        assert isinstance(refused, FolderRefused)
+        assert refused.reason == "retrodeck_switched_off"
+        assert refused.message == _ESDE_SWITCHED_OFF
+
+    def test_while_retrodeck_s_home_is_missing_they_are_refused_for_that_finding(self, tree, tmp_path):
+        tree.deploy()
+        tree.marker({"rd_home_path": str(tmp_path / "card" / "retrodeck")})
+        tree.rom_directory(tmp_path / "card" / "retrodeck" / "roms")
+
+        refused = tree.adapter().esde_folders()
+
+        assert isinstance(refused, FindingRefused)
+        assert refused.details["finding"]["code"] == "root-missing"
+
+    def test_nothing_is_created(self, tree, tmp_path):
+        rd_home = tree.set_up(tmp_path / "retrodeck")
+
+        tree.adapter().esde_folders()
+
+        assert not (rd_home / "ES-DE").exists()
+
+
 class TestARemovalNeedsARomRoot:
     def test_without_retrodeck_an_uninstall_says_so(self, tree):
         refused = tree.adapter().rom_root()
@@ -362,6 +438,7 @@ class TestUnderAFindingAboutRetroDecksSettings:
             adapter.bios_folder(),
             adapter.saves_root(),
             adapter.move_roots(),
+            adapter.esde_folders(),
         ]
 
         if code == "not-set-up":
@@ -412,6 +489,7 @@ class TestEachRootIsJudgedByItsProvenance:
         for answer in (adapter.bios_folder(), adapter.saves_root()):
             _assumed(answer, "installation,bios,saves")
         _assumed(adapter.move_roots(), "installation,bios,saves")
+        _assumed(adapter.esde_folders(), "installation,bios,saves")
 
     def test_one_key_unset_refuses_only_the_folder_it_would_name(self, tree, tmp_path):
         rd_home = tmp_path / "card" / "retrodeck"
@@ -424,6 +502,7 @@ class TestEachRootIsJudgedByItsProvenance:
         _assumed(adapter.move_roots(), "bios")
         assert adapter.saves_root() == _real(rd_home / "saves")
         assert adapter.download_folder("gba") == _real(rd_home / "roms" / "gba")
+        assert adapter.esde_folders() == _esde_folders_under(rd_home)
 
     def test_a_retrodeck_that_names_no_bios_folder_and_says_nothing_of_why_answers_so(
         self, tree, tmp_path, monkeypatch
@@ -475,6 +554,7 @@ class TestEachRootIsJudgedByItsProvenance:
         adapter = tree.adapter()
 
         assert adapter.download_folder("gba") == _real(rd_home / "roms" / "gba")
+        _assumed(adapter.esde_folders(), "installation")
 
     def test_the_gate_asks_the_roots_alone(self, tree, tmp_path, monkeypatch):
         # roots() carries every finding the gate reads, so health() and the
@@ -499,6 +579,7 @@ _FOLDER_QUESTIONS = (
     "saves_root",
     "rom_folders",
     "move_roots",
+    "esde_folders",
 )
 
 
@@ -552,6 +633,8 @@ class TestWhereAQuestionToTheResolverRaises:
                 assert refused.message == _UNANSWERED
             elif question == "move_roots":
                 assert isinstance(answer, MoveRoots)
+            elif question == "esde_folders":
+                assert isinstance(answer, EsdeFolders)
             else:
                 assert isinstance(answer, str), question
 
@@ -565,6 +648,7 @@ class TestWhereAQuestionToTheResolverRaises:
 
         assert isinstance(game, FolderRefused)
         assert game.message == "Downloads need RetroDECK, which is switched off in Settings › Emulator sources."
+        assert _refused(adapter.esde_folders()).message == _ESDE_SWITCHED_OFF
         for question in ("rom_root", "bios_folder", "saves_root"):
             answer = _answer(adapter, question)
             assert isinstance(answer, EveryFolderRefused), question
@@ -603,6 +687,7 @@ class TestWhereDetectingTheSourcesRaises:
 
         assert isinstance(game, FolderRefused)
         assert game.message == "Downloads need RetroDECK, which is switched off in Settings › Emulator sources."
+        assert _refused(adapter.esde_folders()).message == _ESDE_SWITCHED_OFF
         assert isinstance(removal, EveryFolderRefused)
         assert removal.message == _UNANSWERED
 

@@ -8687,3 +8687,243 @@ class TestALibrarySurfaceThatCreatesNoShortcuts:
         attach.assert_not_awaited()
         with library.uow as uow:
             assert uow.roms.get(20) is not None
+
+
+class TestStandInsUnderASurfaceThatWritesEsde:
+    """An apply run whose surface writes ES-DE places a stand-in for each representative, and its end removes the rest.
+
+    The pass is the real :class:`~services.esde.EsdeStandInService` over the
+    real file adapters under ``tmp_path``, so what a test reads back is what
+    lies in the system's ROM folder. GBA holds a version pair whose USA dump is
+    RomM's main sibling, an installed game, a game whose path a file of the
+    user's holds, a plain game, and a disc set whose files only RomM's detail
+    carries.
+    """
+
+    @staticmethod
+    def _wire(library, fake_romm_api, tmp_path):
+        from fakes.fake_platform_systems import FakePlatformSystems
+        from fakes.fake_retrodeck_folders import FakeRetroDeckFolders
+
+        from adapters.esde_stand_in_index import EsdeStandInIndexAdapter
+        from adapters.esde_stand_ins import EsdeStandInsAdapter
+        from services.esde import EsdeStandInService, EsdeStandInServiceConfig
+
+        roms = tmp_path / "retrodeck" / "roms"
+        library.sync._orchestrator._esde_stand_ins = EsdeStandInService(
+            config=EsdeStandInServiceConfig(
+                stand_ins=EsdeStandInsAdapter(cache_dir=str(tmp_path / "cache")),
+                index=EsdeStandInIndexAdapter(data_dir=str(tmp_path / "data"), logger=logging.getLogger("esde")),
+                retrodeck_folders=FakeRetroDeckFolders(roms=str(roms)),
+                platform_systems=FakePlatformSystems(),
+                m3u_support=lambda system_name: True,
+                romm_api=fake_romm_api,
+                uow_factory=FakeUnitOfWorkFactory(uow=library.uow),
+                settings=library.settings,
+                loop=asyncio.get_running_loop(),
+                logger=logging.getLogger("esde"),
+                log_debug=lambda msg: None,
+            )
+        )
+        return roms / "gba"
+
+    @staticmethod
+    def _seed(library, fake_romm_api, folder) -> None:
+        _use_fake_romm(library, fake_romm_api)
+        single = {"has_simple_single_file": True, "updated_at": "2026-01-01T00:00:00+00:00"}
+        _seed_platform(
+            fake_romm_api,
+            platform_id=2,
+            name="GBA",
+            slug="gba",
+            roms=[
+                {"id": 20, "name": "Golf (USA)", "fs_name": "Golf (USA).gba", "igdb_id": 300, **single}
+                | {"rom_user": {"is_main_sibling": True}},
+                {"id": 22, "name": "Golf (Europe)", "fs_name": "Golf (Europe).gba", "igdb_id": 300, **single},
+                {"id": 30, "name": "Tetris", "fs_name": "Tetris.gba", **single},
+                {"id": 40, "name": "Mine", "fs_name": "Mine.gba", **single},
+                {"id": 50, "name": "Pinball", "fs_name": "Pinball.gba", **single},
+                {
+                    "id": 60,
+                    "name": "Disc Game",
+                    "fs_name": "Disc Game",
+                    "fs_name_no_ext": "Disc Game",
+                    "has_multiple_files": True,
+                    "updated_at": "2026-01-01T00:00:00+00:00",
+                    "files": [
+                        {"file_name": "Disc Game.cue", "file_size_bytes": 80},
+                        {"file_name": "Disc Game.bin", "file_size_bytes": 9000},
+                    ],
+                },
+            ],
+        )
+        library.settings["enabled_platforms"] = {"2": True}
+        _seed_install(library, 30, file_path=str(folder / "Tetris.gba"), platform_slug="gba")
+        folder.mkdir(parents=True)
+        (folder / "Mine.gba").write_bytes(b"the user's own dump")
+
+    @staticmethod
+    async def _apply(library, run_id: str) -> None:
+        library.sync._chunk_dispatcher._wait_for_unit_complete = _fake_wait_set_event
+        library.sync._cover_preparer._download_artwork = AsyncMock(return_value={})
+        library.sync._box.sync_state = SyncState.RUNNING
+        library.sync._box.current_sync_id = run_id
+        await library.sync._orchestrator._do_sync_per_unit()
+
+    @staticmethod
+    def _links(folder) -> dict[str, str]:
+        return {entry.name: os.readlink(entry.path) for entry in os.scandir(folder) if entry.is_symlink()}
+
+    @pytest.mark.asyncio
+    async def test_each_representative_no_download_holds_gets_one_and_nothing_else_is_touched(
+        self, library, fake_romm_api, tmp_path
+    ):
+        folder = self._wire(library, fake_romm_api, tmp_path)
+        self._seed(library, fake_romm_api, folder)
+        library.settings["library_surface"] = "esde"
+
+        await self._apply(library, "run-1")
+
+        assert set(self._links(folder)) == {"Golf (USA).gba", "Pinball.gba", "Disc Game.m3u"}
+        assert all("/esde/stand-ins/" in target for target in self._links(folder).values())
+        assert (folder / "Disc Game.m3u" / "Disc Game.m3u").is_file()
+        assert (folder / "Mine.gba").read_bytes() == b"the user's own dump"
+        assert [args for name, args, _ in fake_romm_api.call_log if name == "get_rom"] == [(60,)]
+
+    @pytest.mark.asyncio
+    async def test_the_next_run_removes_the_stand_in_of_a_game_rom_m_no_longer_lists(
+        self, library, fake_romm_api, tmp_path
+    ):
+        folder = self._wire(library, fake_romm_api, tmp_path)
+        self._seed(library, fake_romm_api, folder)
+        library.settings["library_surface"] = "esde"
+        await self._apply(library, "run-1")
+        del fake_romm_api.roms[50]
+
+        await self._apply(library, "run-2")
+
+        assert set(self._links(folder)) == {"Golf (USA).gba", "Disc Game.m3u"}
+        assert (folder / "Mine.gba").read_bytes() == b"the user's own dump"
+        assert [args for name, args, _ in fake_romm_api.call_log if name == "get_rom"] == [(60,)]
+
+    @pytest.mark.asyncio
+    async def test_a_cancelled_run_removes_none(self, library, fake_romm_api, tmp_path):
+        folder = self._wire(library, fake_romm_api, tmp_path)
+        self._seed(library, fake_romm_api, folder)
+        library.settings["library_surface"] = "esde"
+        await self._apply(library, "run-1")
+        del fake_romm_api.roms[50]
+        place = library.sync._orchestrator._esde_stand_ins.place
+
+        async def cancel_after(*args, **kwargs):
+            await place(*args, **kwargs)
+            library.sync._box.request_cancel()
+
+        library.sync._orchestrator._esde_stand_ins.place = cancel_after
+
+        await self._apply(library, "run-2")
+
+        assert "Pinball.gba" in self._links(folder)
+
+    @pytest.mark.asyncio
+    async def test_a_steam_run_places_none(self, library, fake_romm_api, tmp_path):
+        folder = self._wire(library, fake_romm_api, tmp_path)
+        self._seed(library, fake_romm_api, folder)
+        library.settings["library_surface"] = "steam"
+
+        await self._apply(library, "run-1")
+
+        assert self._links(folder) == {}
+        assert not (tmp_path / "data" / "esde").exists()
+
+
+class TestTheStandInPassIsHandedEachUnit:
+    """What a run hands the pass, read off the recording fake the harness wires."""
+
+    @staticmethod
+    def _pass(library):
+        return library.sync._orchestrator._esde_stand_ins
+
+    @pytest.mark.asyncio
+    async def test_a_run_names_its_surface_hands_over_each_unit_s_representatives_and_ends(
+        self, library, fake_romm_api
+    ):
+        _use_fake_romm(library, fake_romm_api)
+        _seed_platform(
+            fake_romm_api,
+            platform_id=2,
+            name="GBA",
+            slug="gba",
+            roms=[
+                {"id": 20, "name": "Golf (USA)", "igdb_id": 300, "rom_user": {"is_main_sibling": True}},
+                {"id": 22, "name": "Golf (Europe)", "igdb_id": 300},
+                {"id": 30, "name": "Tetris"},
+            ],
+        )
+        library.settings["enabled_platforms"] = {"2": True}
+        library.settings["library_surface"] = "both"
+        library.sync._chunk_dispatcher._wait_for_unit_complete = _fake_wait_set_event
+        library.sync._cover_preparer._download_artwork = AsyncMock(return_value={})
+        library.sync._box.sync_state = SyncState.RUNNING
+        library.sync._box.current_sync_id = "run-1"
+
+        await library.sync._orchestrator._do_sync_per_unit()
+
+        recorded = self._pass(library)
+        assert recorded.surfaces == ["both"]
+        assert [(unit.slug, ids, skipped) for unit, ids, skipped in recorded.placed] == [
+            ("gba", frozenset({20, 30}), False)
+        ]
+        assert recorded.settles == 1
+
+    @pytest.mark.asyncio
+    async def test_a_unit_skipped_as_unchanged_is_handed_over_as_skipped(self, library, fake_romm_api):
+        _use_fake_romm(library, fake_romm_api)
+        _seed_platform(
+            fake_romm_api,
+            platform_id=1,
+            name="N64",
+            slug="n64",
+            roms=[{"id": 10, "name": "Zelda", "fs_name": "zelda.z64", "updated_at": _OLD_UPDATED_AT}],
+        )
+        library.settings["enabled_platforms"] = {"1": True}
+        _seed_rom_row(library, 10, app_id=1010, platform_slug="n64", name="Zelda", fs_name="zelda.z64")
+        _seed_platform_stamp(library, "n64", at="2025-01-01T00:00:00", rom_count=1, rom_ids=(10,))
+        library.sync._box.sync_state = SyncState.RUNNING
+        library.sync._box.current_sync_id = "run-1"
+
+        await library.sync._orchestrator._do_sync_per_unit()
+
+        assert [(unit.slug, ids, skipped) for unit, ids, skipped in self._pass(library).placed] == [
+            ("n64", frozenset({10}), True)
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_run_with_nothing_to_sync_still_ends(self, library, fake_romm_api):
+        _use_fake_romm(library, fake_romm_api)
+        library.sync._box.sync_state = SyncState.RUNNING
+        library.sync._box.current_sync_id = "run-1"
+
+        await library.sync._orchestrator._do_sync_per_unit()
+
+        assert self._pass(library).settles == 1
+
+    @pytest.mark.asyncio
+    async def test_a_cancelled_run_never_ends_the_pass(self, library, fake_romm_api):
+        _use_fake_romm(library, fake_romm_api)
+        _seed_platform(fake_romm_api, platform_id=2, name="GBA", slug="gba", roms=[{"id": 30, "name": "Tetris"}])
+        library.settings["enabled_platforms"] = {"2": True}
+        library.settings["library_surface"] = "esde"
+        box = library.sync._box
+
+        async def cancel_on_commit(*args, **kwargs):
+            box.request_cancel()
+
+        library.sync._reporter.commit_unit_results = cancel_on_commit  # type: ignore[method-assign]
+        box.sync_state = SyncState.RUNNING
+        box.current_sync_id = "run-1"
+
+        await library.sync._orchestrator._do_sync_per_unit()
+
+        assert self._pass(library).placed == []
+        assert self._pass(library).settles == 0

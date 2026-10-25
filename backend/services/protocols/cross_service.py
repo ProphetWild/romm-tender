@@ -13,17 +13,19 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Protocol
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Collection
     from contextlib import AbstractAsyncContextManager
 
     from domain.artwork_slot import ArtworkSlot
     from domain.disc_selection import Disc
     from domain.emulator_commands import LaunchingEmulator
     from domain.emulator_sources import SourcesReading
+    from domain.library_surface import LibrarySurface
     from domain.rom_install import RomInstall
     from domain.save_answer import SaveAnswer
     from domain.shortcut_data import EmulatorInvocation
     from domain.update_release import LatestRelease
+    from domain.work_unit import WorkUnit
     from lib.partial_failure import PartialFailure
     from models.prune import InstalledContentRemoval, PruneSaveBackup, SourceClaim
     from models.shortcut_artwork import SlotAnswer, WrittenIcon
@@ -864,6 +866,30 @@ class RendererAboveCeilingProvider(Protocol):
     """
 
     def __call__(self) -> RendererAboveCeilingFn: ...
+
+
+class EsdeStandInPass(Protocol):
+    """What a library sync's apply run hands the ES-DE stand-in pass: its surface, each unit, and its end.
+
+    ``begin_run`` names the library surface the run syncs to; the pass places
+    and removes nothing unless that surface writes ES-DE. ``place`` is handed a
+    unit once its rows are committed, or once it was skipped as unchanged, with
+    the ids of the ROMs the sync gives shortcuts among its ROMs. ``settle`` ends
+    a run that was not cancelled; a run that ends without it removes nothing.
+    """
+
+    def begin_run(self, surface: LibrarySurface) -> None: ...
+
+    async def place(
+        self,
+        unit: WorkUnit,
+        roms: list[dict[str, Any]],
+        representative_ids: Collection[int],
+        *,
+        skipped: bool = False,
+    ) -> None: ...
+
+    async def settle(self) -> None: ...
 
 
 class ShortcutArtworkJob(Protocol):

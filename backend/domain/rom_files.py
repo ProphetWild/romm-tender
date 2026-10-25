@@ -8,6 +8,7 @@ as parameters.
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
 from typing import Any
 
 from domain.disc_formats import TRACK_DESCRIPTORS
@@ -400,3 +401,81 @@ def resolve_extract_dir_name(rom_detail: dict[str, Any]) -> str:
         return fs_name_no_ext
     fs_name = rom_detail.get("fs_name", synthetic_rom_name(rom_detail))
     return os.path.splitext(fs_name)[0]
+
+
+_DEGENERATE_COMPONENTS = frozenset({"", ".", ".."})
+
+
+def coerce_safe_component(name: str, fallback: str) -> tuple[str, bool]:
+    """Coerce *name* to a single safe path component, or *fallback*. Lexical, no I/O.
+
+    The defanging counterpart to ``lib.path_safety.safe_path_component``: where
+    that *raises* to abort the whole operation, this *coerces* so the caller can
+    proceed with a safe name. It strips any directory portion with
+    ``os.path.basename``, then substitutes *fallback* for a degenerate result
+    that would not name a real child — the empty string, whitespace only,
+    ``"."`` or ``".."``.
+
+    The degenerate check is load-bearing: ``os.path.basename("..") == ".."``
+    and ``os.path.basename("dir/") == ""``, and ``os.path.join(base, "..")``
+    (or ``os.path.join(base, "")``) resolves to *base*'s parent or *base*
+    itself — so a downstream ``rmtree`` or write would hit the wrong directory.
+    Basename alone (traversal-stripping) is not enough.
+
+    *fallback* must itself already be a valid single component (e.g. a
+    synthetic ``rom_<id>`` name); it is returned verbatim for a degenerate
+    input. Returns ``(component, changed)`` where *changed* is True whenever
+    the returned component differs from *name*, so the caller logs exactly one
+    warning and never mistakes a coercion for a passthrough.
+    """
+    component = os.path.basename(name)
+    if component.strip() in _DEGENERATE_COMPONENTS:
+        return (fallback, True)
+    return (component, component != name)
+
+
+@dataclass(frozen=True, slots=True)
+class LocalName:
+    """A name a ROM's download takes in its system's folder, beside the name RomM's payload states for it.
+
+    ``files_missing`` is :func:`resolve_local_file_name`'s inconsistency: a
+    nested single file whose ``files`` list is empty, named by ``fs_name``.
+    """
+
+    name: str
+    stated: str
+    files_missing: bool = False
+
+    @property
+    def changed(self) -> bool:
+        """Whether *name* had to be coerced from what RomM states (:func:`coerce_safe_component`)."""
+        return self.name != self.stated
+
+
+def safe_local_file_name(rom_detail: dict[str, Any]) -> LocalName:
+    """The name a single-file download of this ROM takes: RomM's (:func:`resolve_local_file_name`), coerced.
+
+    Coerced to one safe component by :func:`coerce_safe_component`, with the
+    synthetic ``rom_<id>`` for a degenerate one: ``..`` would escape the
+    system's folder, and ``.`` or ``""`` would name the folder itself.
+    """
+    stated, files_missing = resolve_local_file_name(rom_detail)
+    name, _changed = coerce_safe_component(stated, synthetic_rom_name(rom_detail))
+    return LocalName(name=name, stated=stated, files_missing=files_missing)
+
+
+def safe_extract_dir_name(rom_detail: dict[str, Any]) -> LocalName:
+    """The folder an unpacked download of this ROM is extracted into (:func:`resolve_extract_dir_name`), coerced.
+
+    Coerced as :func:`safe_local_file_name` coerces: a degenerate name would
+    resolve to the system's folder or its parent and turn a later removal of the
+    extracted folder into a removal of the whole system's.
+    """
+    stated = resolve_extract_dir_name(rom_detail)
+    name, _changed = coerce_safe_component(stated, synthetic_rom_name(rom_detail))
+    return LocalName(name=name, stated=stated)
+
+
+def m3u_playlist_name(rom_detail: dict[str, Any]) -> str:
+    """The stem of the playlist a download writes into an unpacked disc set: ``fs_name_no_ext``, else the ROM's name."""
+    return rom_detail.get("fs_name_no_ext", rom_detail.get("name", "playlist"))

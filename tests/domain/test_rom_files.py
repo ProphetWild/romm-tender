@@ -5,16 +5,21 @@ import os
 import pytest
 
 from domain.rom_files import (
+    LocalName,
     build_m3u_content,
+    coerce_safe_component,
     detect_launch_file,
     es_de_collapse_rename,
     folder_boot_layout_root,
     folder_boot_root,
     is_launchable_target,
     is_multi_file_download,
+    m3u_playlist_name,
     needs_m3u,
     resolve_extract_dir_name,
     resolve_local_file_name,
+    safe_extract_dir_name,
+    safe_local_file_name,
     synthetic_rom_name,
 )
 
@@ -581,6 +586,108 @@ class TestResolveExtractDirName:
 
     def test_missing_fs_name_and_id_uses_unknown_fallback(self):
         assert resolve_extract_dir_name({}) == "rom_unknown"
+
+
+class TestCoerceSafeComponent:
+    _FALLBACK = "rom_42"
+
+    def test_legit_name_is_byte_identical_and_unchanged(self):
+        assert coerce_safe_component("Metal Gear Solid 4", self._FALLBACK) == ("Metal Gear Solid 4", False)
+
+    def test_legit_name_with_spaces_preserved_byte_identical(self):
+        # Leading/trailing spaces in a legit name are NOT stripped (only tested
+        # for degeneracy) — the component stays byte-identical.
+        assert coerce_safe_component("  My Game  ", self._FALLBACK) == ("  My Game  ", False)
+
+    def test_directory_portion_stripped_to_basename(self):
+        assert coerce_safe_component("../../etc/pwned", self._FALLBACK) == ("pwned", True)
+
+    def test_absolute_path_stripped_to_basename(self):
+        assert coerce_safe_component("/etc/passwd", self._FALLBACK) == ("passwd", True)
+
+    def test_dotdot_falls_back(self):
+        # os.path.basename("..") == ".." — the load-bearing degenerate case.
+        assert coerce_safe_component("..", self._FALLBACK) == (self._FALLBACK, True)
+
+    def test_dot_falls_back(self):
+        assert coerce_safe_component(".", self._FALLBACK) == (self._FALLBACK, True)
+
+    def test_empty_falls_back(self):
+        assert coerce_safe_component("", self._FALLBACK) == (self._FALLBACK, True)
+
+    def test_trailing_slash_basenames_to_empty_falls_back(self):
+        # os.path.basename("foo/") == "" — a directory-shaped name.
+        assert coerce_safe_component("foo/", self._FALLBACK) == (self._FALLBACK, True)
+
+    def test_whitespace_only_falls_back(self):
+        assert coerce_safe_component("   ", self._FALLBACK) == (self._FALLBACK, True)
+
+    def test_dotdot_wrapped_in_dirs_falls_back(self):
+        # os.path.basename("foo/..") == ".." → still degenerate.
+        assert coerce_safe_component("foo/..", self._FALLBACK) == (self._FALLBACK, True)
+
+    def test_leading_dots_name_is_not_degenerate(self):
+        # "..foo" is a real (if unusual) child name, not a traversal.
+        assert coerce_safe_component("..foo", self._FALLBACK) == ("..foo", False)
+
+
+class TestSafeLocalFileName:
+    """The name a single-file download takes, which a stand-in's prediction takes too."""
+
+    def test_a_clean_name_is_rom_m_s_own_and_unchanged(self):
+        assert safe_local_file_name({"id": 7, "fs_name": "Game (USA).gba"}) == LocalName(
+            name="Game (USA).gba", stated="Game (USA).gba"
+        )
+        assert not safe_local_file_name({"id": 7, "fs_name": "Game (USA).gba"}).changed
+
+    def test_a_nested_single_file_is_named_by_its_file(self):
+        rom = {"id": 7, "fs_name": "Game", "has_nested_single_file": True, "files": [{"file_name": "Game.chd"}]}
+
+        assert safe_local_file_name(rom).name == "Game.chd"
+
+    def test_a_directory_portion_is_stripped_and_counts_as_a_change(self):
+        local = safe_local_file_name({"id": 7, "fs_name": "../../etc/passwd"})
+
+        assert (local.name, local.stated, local.changed) == ("passwd", "../../etc/passwd", True)
+
+    @pytest.mark.parametrize("degenerate", ["..", ".", "", "   ", "foo/.."])
+    def test_a_degenerate_name_falls_back_to_the_synthetic_one(self, degenerate):
+        local = safe_local_file_name({"id": 7, "fs_name": degenerate})
+
+        assert local.name == "rom_7"
+        assert local.changed
+
+    def test_a_nested_single_file_without_files_says_so_and_keeps_fs_name(self):
+        local = safe_local_file_name({"id": 7, "fs_name": "Game", "has_nested_single_file": True, "files": []})
+
+        assert (local.name, local.files_missing) == ("Game", True)
+
+
+class TestSafeExtractDirName:
+    def test_it_is_the_rom_s_identity_unchanged(self):
+        local = safe_extract_dir_name({"id": 7, "fs_name_no_ext": "Final Fantasy VII", "fs_name": "FF7.zip"})
+
+        assert (local.name, local.changed, local.files_missing) == ("Final Fantasy VII", False, False)
+
+    def test_a_directory_portion_is_stripped(self):
+        local = safe_extract_dir_name({"id": 7, "fs_name_no_ext": "../../etc/pwned"})
+
+        assert (local.name, local.stated, local.changed) == ("pwned", "../../etc/pwned", True)
+
+    @pytest.mark.parametrize("degenerate", ["..", ".", "   "])
+    def test_a_degenerate_name_falls_back_to_the_synthetic_one(self, degenerate):
+        assert safe_extract_dir_name({"id": 4778, "fs_name_no_ext": degenerate}).name == "rom_4778"
+
+
+class TestM3uPlaylistName:
+    def test_it_is_fs_name_no_ext(self):
+        assert m3u_playlist_name({"fs_name_no_ext": "FF7", "name": "Final Fantasy VII"}) == "FF7"
+
+    def test_without_it_the_rom_s_name(self):
+        assert m3u_playlist_name({"name": "Final Fantasy VII"}) == "Final Fantasy VII"
+
+    def test_without_either_playlist(self):
+        assert m3u_playlist_name({}) == "playlist"
 
 
 class TestATrackSetLaunchesItsDescriptor:

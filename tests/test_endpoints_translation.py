@@ -40,6 +40,7 @@ from fakes.fake_cover_slot_reader import FakeCoverSlotReader
 from fakes.fake_disc_resolver import FakeDiscResolver
 from fakes.fake_download_file_store import FakeDownloadFileStore
 from fakes.fake_emulator_sources import FakeEmulatorSources
+from fakes.fake_esde_stand_in_pass import FakeEsdeStandInPass
 from fakes.fake_event_sink import FakeEventSink
 from fakes.fake_firmware_file_store import FakeFirmwareFileStore
 from fakes.fake_firmware_resolver import FakeFirmwareResolver
@@ -1210,6 +1211,7 @@ def _dispatcher_over_library(romm_api: FakeRommApi, events: FakeEventSink, home:
             renderer_rss=FakeRendererRss(),
             renderer_gc=FakeRendererGc(),
             conflict_rules=_make_conflict_rules(),
+            esde_stand_ins=FakeEsdeStandInPass(),
         )
     )
     endpoints = Endpoints(_make_application(_make_services_bundle(sync_service=service)), HostStatus())

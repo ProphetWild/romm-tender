@@ -16,6 +16,7 @@ from _factories import _make_conflict_rules, _make_prune_conflicts
 from fakes.fake_core_info_provider import FakeCoreInfoProvider, FakeSandboxLauncher
 from fakes.fake_disc_resolver import FakeDiscResolver
 from fakes.fake_emulator_sources import FakeEmulatorSources
+from fakes.fake_esde_stand_in_pass import FakeEsdeStandInPass
 from fakes.fake_platform_core_reader import FakePlatformCoreReader
 from fakes.fake_platform_systems import FakePlatformSystems
 from fakes.fake_renderer_gc import FakeRendererGc
@@ -158,6 +159,7 @@ def library(tmp_path, emit, logger, home) -> LibraryHarness:
             renderer_gc=renderer_gc,
             conflict_rules=_make_conflict_rules(prune_conflicts=prune_conflicts),
             artwork_job=artwork_job,
+            esde_stand_ins=FakeEsdeStandInPass(),
         ),
     )
 

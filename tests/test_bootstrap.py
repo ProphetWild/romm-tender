@@ -19,6 +19,7 @@ from fakes.fake_core_info_provider import FakeCoreInfoProvider
 from fakes.fake_cover_art_file_store import FakeCoverArtFileStore
 from fakes.fake_download_file_store import FakeDownloadFileStore
 from fakes.fake_emulator_sources import FakeEmulatorSources
+from fakes.fake_esde_stand_in_store import FakeEsdeStandInIndex, FakeEsdeStandInStore
 from fakes.fake_firmware_file_store import FakeFirmwareFileStore
 from fakes.fake_firmware_resolver import FakeFirmwareResolver
 from fakes.fake_game_process_control import FakeGameProcessControlAdapter
@@ -169,6 +170,22 @@ class TestBootstrap:
     def test_returns_romm_api(self, tmp_path):
         result = _bootstrap_for(tmp_path)
         assert isinstance(result.adapters.romm_api, RommApiAdapter)
+
+    def test_the_stand_ins_lie_in_the_cache_root_and_their_record_in_the_data_root(self, tmp_path):
+        from adapters.esde_stand_in_index import EsdeStandInIndexAdapter
+        from adapters.esde_stand_ins import EsdeStandInsAdapter
+        from domain.esde_stand_in import FILE_SHAPE, StandInRecord, StandInShape
+
+        result = _bootstrap_for(tmp_path)
+        folder = tmp_path / "roms" / "gba"
+        record = StandInRecord("gba", "gba", None, str(folder / "Game.gba"), StandInShape("Game.gba", FILE_SHAPE))
+
+        assert isinstance(result.adapters.esde_stand_ins, EsdeStandInsAdapter)
+        assert isinstance(result.adapters.esde_stand_in_index, EsdeStandInIndexAdapter)
+        result.adapters.esde_stand_ins.place(42, StandInShape("Game.gba", FILE_SHAPE), str(folder / "Game.gba"))
+        result.adapters.esde_stand_in_index.write({42: record})
+        assert os.readlink(folder / "Game.gba").startswith(os.path.realpath(tmp_path / "cache") + os.sep)
+        assert (tmp_path / "data" / "esde" / "index.json").is_file()
 
     def test_returns_retrodeck_folders_adapter(self, tmp_path):
         """Bootstrap instantiates the RetroDECK paths adapter for the callbacks bundle."""
@@ -672,6 +689,8 @@ class TestWireServices:
             ),
             "downscale_icon": MagicMock(),
             "tender_logo": MagicMock(),
+            "esde_stand_ins": FakeEsdeStandInStore(),
+            "esde_stand_in_index": FakeEsdeStandInIndex(),
             "panel_connected": MagicMock(),
         }
 
@@ -720,6 +739,8 @@ class TestWireServices:
                 journal=FakeJournal(),
                 downscale_icon=deps["downscale_icon"],
                 tender_logo=deps["tender_logo"],
+                esde_stand_ins=deps["esde_stand_ins"],
+                esde_stand_in_index=deps["esde_stand_in_index"],
             ),
             stores=StateBundle(
                 settings=deps["settings"],
@@ -840,6 +861,20 @@ class TestWireServices:
         assert isinstance(result.update_output_service, UpdateOutputService)
         assert isinstance(result.shortcut_file_service, ShortcutFileService)
         assert isinstance(result.shortcut_artwork_service, ShortcutArtworkService)
+        deps["loop"].close()
+
+    def test_the_library_sync_hands_its_units_to_the_stand_ins_over_the_bundle_s_seams(self, tmp_path):
+        from services.esde import EsdeStandInService
+
+        deps = self._make_deps(tmp_path)
+        result = wire_services(self._make_config(deps))
+
+        stand_ins = result.sync_service._orchestrator._esde_stand_ins
+        assert isinstance(stand_ins, EsdeStandInService)
+        assert stand_ins._stand_ins is deps["esde_stand_ins"]
+        assert stand_ins._index is deps["esde_stand_in_index"]
+        assert stand_ins._retrodeck_folders is deps["retrodeck_folders"]
+        assert stand_ins._settings is deps["settings"]
         deps["loop"].close()
 
     def test_the_artwork_job_reads_the_cleanup_the_sync_and_the_removal_it_yields_to(self, tmp_path):

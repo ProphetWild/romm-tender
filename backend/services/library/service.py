@@ -51,6 +51,7 @@ if TYPE_CHECKING:
         DebugLogger,
         DiscResolver,
         EmulatorSourcesReader,
+        EsdeStandInPass,
         EventEmitter,
         RendererGcFn,
         RendererRssFn,
@@ -84,7 +85,8 @@ class LibraryServiceConfig:
     exhausted. ``conflict_rules`` are what a library use case checks at
     its entry, under its endpoint's name, and what the ``sync_stale`` /
     ``sync_complete`` events take their leases through. The ``artwork_job`` is handed
-    to the orchestrator and, as its placeholder path, to the chunk dispatcher.
+    to the orchestrator and, as its placeholder path, to the chunk dispatcher, and
+    the ``esde_stand_ins`` pass to the orchestrator.
     """
 
     romm_api: RommLibraryApi
@@ -108,6 +110,7 @@ class LibraryServiceConfig:
     renderer_gc: RendererGcFn
     conflict_rules: ConflictRules
     artwork_job: ShortcutArtworkJob
+    esde_stand_ins: EsdeStandInPass
 
 
 class LibraryService:
@@ -277,6 +280,7 @@ class LibraryService:
                 sync_run_recorder=self._sync_run_recorder,
                 conflict_rules=config.conflict_rules,
                 artwork_job=config.artwork_job,
+                esde_stand_ins=config.esde_stand_ins,
             )
         )
 

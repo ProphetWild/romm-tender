@@ -31,6 +31,8 @@ from adapters.debug_logger import SettingsAwareDebugLogger
 from adapters.download_file import DownloadFileAdapter
 from adapters.emulator_sources import EmulatorSourcesAdapter
 from adapters.es_find_rules import EsFindRulesAdapter
+from adapters.esde_stand_in_index import EsdeStandInIndexAdapter
+from adapters.esde_stand_ins import EsdeStandInsAdapter
 from adapters.firmware_file import FirmwareFileAdapter
 from adapters.game_process import GameProcessAdapter
 from adapters.gavel_native import GavelNativeAdapter
@@ -92,6 +94,8 @@ if TYPE_CHECKING:
         DirectoryFileListerFn,
         DownloadFileStore,
         EmulatorSourcesReader,
+        EsdeStandInIndexStore,
+        EsdeStandInStore,
         EventEmitter,
         FirmwareFileStore,
         FirmwareIdentityProvider,
@@ -204,6 +208,8 @@ class AdapterBundle:
     journal: JournalEntriesFn
     downscale_icon: IconDownscaleFn
     tender_logo: TenderLogoFn
+    esde_stand_ins: EsdeStandInStore
+    esde_stand_in_index: EsdeStandInIndexStore
 
 
 @dataclass(frozen=True)
@@ -457,6 +463,10 @@ def bootstrap(
     update_failure = UpdateFailureFileAdapter(state_dir=directories.state_dir, log_debug=debug_logger)
     update_attempt = UpdateAttemptFileAdapter(state_dir=directories.state_dir, log_debug=debug_logger)
     update_staging = UpdateStagingAdapter(directory=os.path.join(directories.cache_dir, UPDATE_DIR_NAME))
+    # A stand-in's stub is re-derivable and lives in the cache root; the record
+    # of what Tender placed is not, and lives in the data root.
+    esde_stand_ins = EsdeStandInsAdapter(cache_dir=directories.cache_dir)
+    esde_stand_in_index = EsdeStandInIndexAdapter(data_dir=directories.data_dir, logger=logger)
     transient_units = SystemdRunAdapter()
     journal = JournalctlAdapter(log_debug=debug_logger)
     game_process = GameProcessAdapter()
@@ -531,6 +541,8 @@ def bootstrap(
         journal=journal,
         downscale_icon=icon_images.downscale,
         tender_logo=icon_images.tender_logo,
+        esde_stand_ins=esde_stand_ins,
+        esde_stand_in_index=esde_stand_in_index,
     )
     stores = StateBundle(
         settings=settings,

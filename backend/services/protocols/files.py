@@ -3,7 +3,8 @@
 Each Protocol owns the raw POSIX-style file operations one service
 needs against one logical subtree (cover art, ROM downloads, the
 launcher download queue, firmware/BIOS files, RetroDECK migration
-flows, installed ROMs, save files, SteamGridDB artwork cache).
+flows, installed ROMs, save files, SteamGridDB artwork cache, ES-DE's
+stand-ins).
 Implementations live in adapters; services see only the I/O seams.
 
 Implementations are synchronous — services that call from an async
@@ -15,9 +16,10 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Mapping
     from contextlib import AbstractContextManager
 
+    from domain.esde_stand_in import PlaceOutcome, StandInRecord, StandInShape
     from domain.firmware_places import PlaceLook
     from domain.prune import BundleReadmeContext
     from domain.save_measure import SaveFileMeasure
@@ -33,6 +35,52 @@ if TYPE_CHECKING:
         SourceClaim,
         SteamRecoverySnapshot,
     )
+
+
+class EsdeStandInStore(Protocol):
+    """The stand-ins in RetroDECK's ROM folders, and their stubs under Tender's cache root.
+
+    Only a stand-in is ever replaced or removed, and only after it is read
+    again without being followed: a link whose target lies below the stand-in
+    root and names the game it is replaced or removed for. ``place`` answers
+    ``occupied`` where anything else is at the path, and raises
+    ``PathTraversalError`` for a name that is no single path component;
+    ``place`` and ``remove`` raise ``OSError`` where the change cannot be
+    made. The readers answer nothing, never raising, where nothing is there.
+    """
+
+    def place(self, rom_id: int, shape: StandInShape, path: str) -> PlaceOutcome:
+        """Put *rom_id*'s stand-in of *shape* at *path*, where nothing is there or this game's stand-in is."""
+        ...
+
+    def remove(self, rom_id: int, path: str) -> bool:
+        """Remove the link at *path* if it is *rom_id*'s stand-in; whether it was removed. The stub stays."""
+        ...
+
+    def remove_stub(self, rom_id: int) -> None:
+        """Remove *rom_id*'s stubs from the cache root."""
+        ...
+
+    def stand_in_at(self, path: str) -> int | None:
+        """The game the link at *path* stands in for, or ``None`` where it is no stand-in."""
+        ...
+
+    def list_in(self, folder: str) -> dict[str, int]:
+        """Every stand-in directly in *folder*, by path, with the game it stands in for."""
+        ...
+
+
+class EsdeStandInIndexStore(Protocol):
+    """The record of the stand-ins Tender placed; what goes into it is the stand-in service's alone.
+
+    ``read`` answers an empty record where there is none or it cannot be read,
+    and never raises; ``write`` replaces it whole and raises ``OSError`` where
+    it could not be written.
+    """
+
+    def read(self) -> dict[int, StandInRecord]: ...
+
+    def write(self, index: Mapping[int, StandInRecord]) -> None: ...
 
 
 class UpdateStagingStore(Protocol):

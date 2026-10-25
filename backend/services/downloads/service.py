@@ -26,15 +26,13 @@ from domain.rom_files import (
     TMP_EXT,
     ZIP_TMP_EXT,
     is_multi_file_download,
-    resolve_extract_dir_name,
-    resolve_local_file_name,
-    synthetic_rom_name,
+    safe_extract_dir_name,
+    safe_local_file_name,
 )
 from domain.served_shape import is_zip_name, listed_unpacked_bytes, served_shapes
 from domain.sibling_supersede import supersede_siblings
 from lib.background_tasks import BackgroundTasks
 from lib.errors import NotInstalled, Refused
-from lib.path_safety import coerce_safe_component
 from services.downloads.unpack import DownloadUnpacker, DownloadUnpackerConfig
 
 if TYPE_CHECKING:
@@ -512,23 +510,19 @@ class DownloadService:
             await self._rules.hold_until_done(task, label)
 
     def _safe_local_file_name(self, rom_detail: dict[str, Any]) -> str:
-        """The on-disk name for this ROM: the server's, coerced to one safe component.
+        """The on-disk name for this ROM (``safe_local_file_name``), with each repair it took logged.
 
-        Strips any directory portion and rejects a degenerate result — ``..``
-        would escape the platform directory and ``.`` or ``""`` would resolve to
-        it — falling back to the synthetic ``rom_<id>`` identity. Both repairs
-        are logged, because the name the user sees on disk then differs from the
-        one the server states.
+        A repair is logged because the name the user sees on disk then differs
+        from the one the server states.
         """
-        file_name, files_missing = resolve_local_file_name(rom_detail)
-        if files_missing:
+        local = safe_local_file_name(rom_detail)
+        if local.files_missing:
             self._logger.warning(
-                f"has_nested_single_file=true but files list is empty; falling back to fs_name='{file_name}'"
+                f"has_nested_single_file=true but files list is empty; falling back to fs_name='{local.stated}'"
             )
-        safe_name, name_changed = coerce_safe_component(file_name, synthetic_rom_name(rom_detail))
-        if name_changed:
-            self._logger.warning(f"Sanitized fs_name from '{file_name}' to '{safe_name}'")
-        return safe_name
+        if local.changed:
+            self._logger.warning(f"Sanitized fs_name from '{local.stated}' to '{local.name}'")
+        return local.name
 
     def _partial_tmp_size(self, target_path, rom_detail) -> int:
         """Bytes already on disk in the partial ``.tmp`` for *target_path*.
@@ -541,23 +535,11 @@ class DownloadService:
         return self._download_file_store.file_size(target_path + tmp_ext)
 
     def _resolve_safe_extract_dir_name(self, rom_detail: dict[str, Any]) -> str:
-        """Resolve the sanitized base name for the extract dir an unpacked ROM lands in.
-
-        Names the directory after the ROM's identity via
-        ``resolve_extract_dir_name`` (never ``files[0]``), then coerces the
-        server-supplied value to a single safe path component
-        (``coerce_safe_component``): a directory portion (``../evil``, an
-        absolute path) is stripped to its basename, AND a degenerate result
-        (``..``/``.``/empty/whitespace — which would resolve to the roms root
-        or the platform dir and turn a later ``remove_tree`` into a
-        library-wide delete) falls back to the synthetic ``rom_<id>`` identity.
-        Mirrors the ``file_name`` guard in ``_start_claimed_download``.
-        """
-        raw = resolve_extract_dir_name(rom_detail)
-        safe, changed = coerce_safe_component(raw, synthetic_rom_name(rom_detail))
-        if changed:
-            self._logger.warning(f"Sanitized extract dir name from '{raw}' to '{safe}'")
-        return safe
+        """The base name of the extract dir an unpacked ROM lands in (``safe_extract_dir_name``), a repair logged."""
+        local = safe_extract_dir_name(rom_detail)
+        if local.changed:
+            self._logger.warning(f"Sanitized extract dir name from '{local.stated}' to '{local.name}'")
+        return local.name
 
     def _unpacker(self) -> DownloadUnpacker:
         """The post-processing over this service's seams.

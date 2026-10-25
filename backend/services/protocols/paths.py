@@ -2,7 +2,8 @@
 
 Services query the host RetroDECK/RetroArch/ES-DE environment through
 these Protocols: RetroDECK's folders (a system's ROM folder, the ROM, BIOS
-and saves roots, the move code's roots), platform-to-system resolution,
+and saves roots, the move code's roots, ES-DE's own folders below RetroDECK's
+home), platform-to-system resolution,
 where a game's save lives, and RetroArch core lookups for ES-DE configured
 systems.
 ``PlatformCoreReader`` exposes Tender's own per-platform core
@@ -18,6 +19,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterable
 
     from domain.emulator_sources import ArrangedSource, SourceReport, SourcesReading
+    from domain.esde_folders import EsdeFolders
     from domain.firmware_wants import FirmwareCatalogue, SourceCatalogues
     from domain.platform_system import PlatformIds, PlatformSystem
     from domain.retrodeck_folders import FolderRefused, MoveRoots
@@ -175,7 +177,9 @@ class RetroDeckFolders(Protocol):
     system's own folder refuses only that system's folder. A refusal comes
     back as a value; the caller that needed the folder raises it.
     :meth:`move_roots` is the move code's, ``None`` where RetroDECK is not
-    detected. Every path is symlink-resolved.
+    detected. :meth:`esde_folders` answers ES-DE's own folders below
+    RetroDECK's home, and refuses as a download does and wherever that home is
+    one the resolver only assumed. Every path is symlink-resolved.
     """
 
     def download_folder(self, system: str) -> str | FolderRefused: ...
@@ -189,6 +193,8 @@ class RetroDeckFolders(Protocol):
     def saves_root(self) -> str | FolderRefused | None: ...
 
     def move_roots(self) -> MoveRoots | FolderRefused | None: ...
+
+    def esde_folders(self) -> EsdeFolders | FolderRefused: ...
 
 
 class CoreResolverFn(Protocol):

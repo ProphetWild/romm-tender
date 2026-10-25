@@ -30,6 +30,7 @@ from services.disc import DiscService, DiscServiceConfig
 from services.disc_launch_resolver import DiscLaunchResolver, DiscLaunchResolverConfig
 from services.downloads import DownloadService, DownloadServiceConfig
 from services.emulator_sources import EmulatorSourcesService, EmulatorSourcesServiceConfig
+from services.esde import EsdeStandInService, EsdeStandInServiceConfig
 from services.firmware import FirmwareService, FirmwareServiceConfig
 from services.firmware.store import FirmwareStore, FirmwareStoreConfig
 from services.game_detail import GameDetailService, GameDetailServiceConfig
@@ -469,6 +470,24 @@ def wire_services(cfg: WiringConfig) -> ServicesBundle:
     )
     removal_in_flight_binding.set(shortcut_removal_service.is_removal_in_flight)
 
+    # The library sync hands it each unit's representatives and its end; the
+    # paths a stand-in is placed at are a download's, asked of the same seams.
+    esde_stand_in_service = EsdeStandInService(
+        config=EsdeStandInServiceConfig(
+            stand_ins=cfg.adapters.esde_stand_ins,
+            index=cfg.adapters.esde_stand_in_index,
+            retrodeck_folders=cfg.callbacks.retrodeck_folders,
+            platform_systems=platform_systems,
+            m3u_support=cfg.callbacks.m3u_support,
+            romm_api=cfg.adapters.romm_api,
+            uow_factory=cfg.callbacks.uow_factory,
+            settings=cfg.stores.settings,
+            loop=cfg.runtime.loop,
+            logger=cfg.runtime.logger,
+            log_debug=cfg.callbacks.log_debug,
+        ),
+    )
+
     sync_service = LibraryService(
         config=LibraryServiceConfig(
             romm_api=cfg.adapters.romm_api,
@@ -492,6 +511,7 @@ def wire_services(cfg: WiringConfig) -> ServicesBundle:
             renderer_gc=cfg.adapters.renderer_gc,
             conflict_rules=conflict_rules,
             artwork_job=shortcut_artwork_service,
+            esde_stand_ins=esde_stand_in_service,
         ),
     )
     pending_sync_binding.set(lambda: sync_service.pending_sync)

@@ -7,8 +7,14 @@ until Tender keeps downloads in a library of its own, RetroDECK is the one
 source Tender downloads into and removes from: a system's
 folder is the handle's ``rom_location(system).dir``, and the ROM root (ES-DE's
 ``ROMDirectory``), the home, the BIOS folder and the saves root are the
-handle's ``roots()``. Tender reads no RetroDECK file of its own and builds no
-folder from a root.
+handle's ``roots()``. Tender reads no RetroDECK file of its own, and builds no
+folder from a root but ES-DE's own (:meth:`RetroDeckFoldersAdapter.esde_folders`):
+its gamelists, scripts and downloaded media lie below RetroDECK's home, which
+the resolver answers, and the resolver answers none of the three. The road not
+taken is asking it anyway by teaching the vendored copy, which ``_vendor/``
+never is (``.claude/rules/vendored-assets.md``); so they are joined onto the
+home in ``domain/esde_folders.py``, and only onto a home the rule below lets
+Tender use.
 
 **Every folder is symlink-resolved.** The folders are handed to the path
 guards as safe roots — a system's own ROM folder for a game's files, the BIOS
@@ -49,6 +55,7 @@ from _vendor.atlas import HEALTH_ISSUE_ROOT_MISSING
 
 from adapters.emulator_sources import source_roots
 from domain.emulator_sources import RETRODECK
+from domain.esde_folders import ESDE_LIBRARY, EsdeFolders, esde_folders_under
 from domain.retrodeck_folders import (
     GAME_DOWNLOAD,
     FolderRefused,
@@ -206,6 +213,29 @@ class RetroDeckFoldersAdapter:
             paths.append(os.path.realpath(path))
         home, bios, saves = paths
         return MoveRoots(home=home, bios=bios, saves=saves)
+
+    def esde_folders(self) -> EsdeFolders | FolderRefused:
+        """ES-DE's gamelists, scripts and downloaded media folders below RetroDECK's home — or why none may be used.
+
+        Refused as a download is refused: RetroDECK must be detected and
+        switched on, its roots established and its home not missing; and the
+        home must be one :mod:`domain.source_roots` lets Tender use, which an
+        assumed one is not. Nothing is created.
+        """
+        retrodeck = self._for_download(ESDE_LIBRARY)
+        if isinstance(retrodeck, FolderRefused):
+            return retrodeck
+        home = _root(retrodeck.roots, ROOT_INSTALLATION)
+        if home is None:
+            return unanswered_refusal()
+        if isinstance(home, FolderRefused):
+            return home
+        joined = esde_folders_under(os.path.realpath(home))
+        return EsdeFolders(
+            gamelists=os.path.realpath(joined.gamelists),
+            scripts=os.path.realpath(joined.scripts),
+            downloaded_media=os.path.realpath(joined.downloaded_media),
+        )
 
     def _removal_root(self, name: str) -> str | FolderRefused | None:
         """The root *name* a removal is bounded by, resolved; ``None`` where it has none or no RetroDECK is detected."""

@@ -27,6 +27,7 @@ from domain.rom_files import (
     es_de_collapse_rename,
     folder_boot_layout_root,
     is_multi_file_download,
+    m3u_playlist_name,
     needs_m3u,
 )
 from domain.served_shape import holds_disc_image, is_zip_name, served_shapes, wrapper_prefix
@@ -438,8 +439,7 @@ class DownloadUnpacker:
         if not needs_m3u(disc_files, m3u_supported):
             return
 
-        rom_name = rom_detail.get("fs_name_no_ext", rom_detail.get("name", "playlist"))
-        m3u_path = os.path.join(extract_dir, f"{rom_name}.m3u")
+        m3u_path = os.path.join(extract_dir, f"{m3u_playlist_name(rom_detail)}.m3u")
         self._download_file_store.write_text_atomic(m3u_path, build_m3u_content(disc_files))
         self._logger.info(f"Auto-generated M3U playlist: {m3u_path}")
 

@@ -160,6 +160,7 @@ modules =
     services.disc_launch_resolver
     services.downloads
     services.emulator_sources
+    services.esde
     services.firmware
     services.game_detail
     services.game_process

@@ -5,7 +5,8 @@ from __future__ import annotations
 import os
 from typing import TYPE_CHECKING
 
-from domain.retrodeck_folders import FolderRefused, MoveRoots, no_rom_folder, no_rom_root
+from domain.esde_folders import EsdeFolders, esde_folders_under
+from domain.retrodeck_folders import FolderRefused, MoveRoots, no_rom_folder, no_rom_root, unanswered_refusal
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -27,6 +28,8 @@ class FakeRetroDeckFolders:
     asks about. ``rom_root`` answers the uninstall's refusal where ``roms`` is
     empty. ``system_refusals`` stands for the question about one system's own
     folder failing: that system's folder answers it, and nothing else does.
+    ES-DE's folders lie below ``home`` and are refused as a download is, and
+    as not established where ``home`` is empty.
     """
 
     def __init__(
@@ -85,3 +88,9 @@ class FakeRetroDeckFolders:
         if not (self.home or self.bios or self.saves):
             return None
         return MoveRoots(home=self.home, bios=self.bios, saves=self.saves)
+
+    def esde_folders(self) -> EsdeFolders | FolderRefused:
+        refused = self.refusal or self.download_refusal
+        if refused is not None:
+            return refused
+        return esde_folders_under(self.home) if self.home else unanswered_refusal()

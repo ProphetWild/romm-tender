@@ -160,7 +160,7 @@ def unpacked_manifest(manifest: tuple[ServerFile, ...]) -> tuple[ServerFile, ...
     return tuple(unpacked)
 
 
-def _listed_members(rom_detail: dict[str, Any]) -> tuple[ServerMember, ...] | None:
+def listed_members(rom_detail: dict[str, Any]) -> tuple[ServerMember, ...] | None:
     """The members RomM lists inside a single zip, or ``None`` where it lists none.
 
     ``None`` both for a payload without ``archive_members`` (a library not
@@ -187,7 +187,7 @@ def served_shapes(rom_detail: dict[str, Any]) -> frozenset[Kind]:
         return frozenset({DIR})
     if not is_zip_name(resolve_local_file_name(rom_detail)[0]):
         return frozenset({FILE})
-    members = _listed_members(rom_detail)
+    members = listed_members(rom_detail)
     if members is not None and not holds_disc_image(member.name for member in members):
         return frozenset({FILE})
     return frozenset({FILE, DIR})
@@ -200,7 +200,7 @@ def listed_unpacked_bytes(rom_detail: dict[str, Any]) -> int:
     image — the zip that is kept as it is needs nothing beyond itself — and 0
     wherever RomM lists no members, which leaves the zip alone to be counted.
     """
-    members = _listed_members(rom_detail)
+    members = listed_members(rom_detail)
     if members is None or not holds_disc_image(member.name for member in members):
         return 0
     return sum(member.size_bytes for member in members)

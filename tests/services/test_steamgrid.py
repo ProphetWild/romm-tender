@@ -21,6 +21,7 @@ from fakes.fake_active_core_resolver import FakeActiveCoreResolver
 from fakes.fake_cover_slot_reader import FakeCoverSlotReader
 from fakes.fake_disc_resolver import FakeDiscResolver
 from fakes.fake_emulator_sources import FakeEmulatorSources
+from fakes.fake_esde_stand_in_pass import FakeEsdeStandInPass
 from fakes.fake_renderer_gc import FakeRendererGc
 from fakes.fake_renderer_rss import FakeRendererRss
 from fakes.fake_settings_persister import FakeSettingsPersister
@@ -125,6 +126,7 @@ def steamgrid(sgdb_artwork_cache, fake_romm_api, fake_steamgrid_db_api, uow, emi
             renderer_gc=FakeRendererGc(),
             conflict_rules=_make_conflict_rules(prune_conflicts=prune_conflicts),
             artwork_job=FakeShortcutArtworkJob(),
+            esde_stand_ins=FakeEsdeStandInPass(),
         ),
     )
 
@@ -1182,6 +1184,7 @@ class TestDebugLoggerProtocolSeam:
                 renderer_gc=FakeRendererGc(),
                 conflict_rules=_make_conflict_rules(prune_conflicts=prune_conflicts),
                 artwork_job=FakeShortcutArtworkJob(),
+                esde_stand_ins=FakeEsdeStandInPass(),
             ),
         )
 

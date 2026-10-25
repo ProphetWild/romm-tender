@@ -91,6 +91,15 @@ class CollectionMembership:
         """The membership of collection *unit*, whose members are *rom_ids*."""
         return cls(name=unit.name, rom_ids=rom_ids, kind=str(unit.collection_kind), virtual_type=unit.virtual_type)
 
+    @staticmethod
+    def key_of(unit: WorkUnit) -> tuple[str, str]:
+        """The key collection *unit*'s membership is held under: the identity its ``CollectionSyncState`` keys off.
+
+        The one builder, so the apply's and the preview's accumulators and the
+        stamp's read-back cannot drift apart.
+        """
+        return (str(unit.collection_kind), str(unit.id))
+
 
 @dataclass(frozen=True)
 class AbandonedChunk:

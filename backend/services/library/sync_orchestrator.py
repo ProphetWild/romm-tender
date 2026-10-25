@@ -87,6 +87,7 @@ if TYPE_CHECKING:
     from services.protocols import (
         Clock,
         ConflictRules,
+        EsdeStandInPass,
         EventEmitter,
         ShortcutArtworkJob,
         UnitOfWorkFactory,
@@ -101,18 +102,6 @@ _SYNC_IN_PROGRESS = "Sync already in progress"
 # ``sync_runs.error`` via ``mark_interrupted``; the status split lets the UI
 # report "(interrupted)" instead of "(cancelled)" for a crash.
 _SYNC_INTERRUPTED = "Sync interrupted (Steam UI stopped responding)"
-
-
-def _collection_membership_key(unit: WorkUnit) -> tuple[str, str]:
-    """The collision-free accumulator key for a collection unit.
-
-    ``(collection_kind, collection_id)`` — the same per-collection identity the
-    #742 ``CollectionSyncState`` stamp keys off — so two collections that share a
-    display NAME never collide in the finalize accumulator. The single builder
-    keeps the real-sync and preview write paths (and the stamp read-back) on one
-    key so they cannot drift (#1503).
-    """
-    return (str(unit.collection_kind), str(unit.id))
 
 
 @dataclass(frozen=True)
@@ -155,7 +144,8 @@ class SyncOrchestratorConfig:
     run earns, and hands that decision over as a method call. The
     ``conflict_rules`` are what a ``sync_stale`` event that removes shortcuts
     takes its lease through. The ``artwork_job`` is asked for a run at every
-    run's end: it stops while a run is in flight.
+    run's end: it stops while a run is in flight. The ``esde_stand_ins`` pass is
+    handed each unit's representatives once it is committed, and a clean run's end.
     """
 
     settings: dict[str, Any]
@@ -178,6 +168,7 @@ class SyncOrchestratorConfig:
     sync_run_recorder: SyncRunRecorder
     conflict_rules: ConflictRules
     artwork_job: ShortcutArtworkJob
+    esde_stand_ins: EsdeStandInPass
 
 
 @dataclass(frozen=True)
@@ -222,6 +213,7 @@ class SyncOrchestrator:
         self._sync_run_recorder = config.sync_run_recorder
         self._rules = config.conflict_rules
         self._artwork_job = config.artwork_job
+        self._esde_stand_ins = config.esde_stand_ins
         self._tasks = BackgroundTasks(logger=config.logger)
 
     # ── Sync control ─────────────────────────────────────────────
@@ -586,11 +578,11 @@ class SyncOrchestrator:
                 unit, synced_rom_ids, progress_step=progress_step, progress_total_steps=progress_total_steps
             )
             if all_collection_rom_ids:
-                collection_memberships[_collection_membership_key(unit)] = CollectionMembership.of(
+                collection_memberships[CollectionMembership.key_of(unit)] = CollectionMembership.of(
                     unit, all_collection_rom_ids
                 )
             if settles and apply_stamps(unit.collection_kind, unit.collection_updated_at, all_collection_rom_ids):
-                restamp_collections.add(_collection_membership_key(unit))
+                restamp_collections.add(CollectionMembership.key_of(unit))
         all_roms.extend(unit_roms)
         if skipped:
             skipped_rom_ids.update(rom["id"] for rom in unit_roms)
@@ -763,6 +755,7 @@ class SyncOrchestrator:
         # Read once, here: a surface changed mid-run reaches the next run, never
         # a unit of this one.
         box.run_library_surface = library_surface(self._settings.get("library_surface"))
+        self._esde_stand_ins.begin_run(box.run_library_surface)
         # Session-budget gate run-scoped state (#1383): the paused flag, the
         # emitted-chunk counter (first chunk exempt → guaranteed forward progress),
         # and the distinct pause reason. The gate's own once-per-run measurement
@@ -836,6 +829,7 @@ class SyncOrchestrator:
                 # and reset the preview baseline (every platform would then
                 # report as 'added') and the ``last_sync`` timestamp. Leaving
                 # the prior completed run as the baseline matches the JSON era.
+                await self._esde_stand_ins.settle()
                 await self.emit_progress(SyncStage.DONE, message="Nothing to sync", running=False)
                 return
 
@@ -1092,6 +1086,7 @@ class SyncOrchestrator:
             # (#1383).
             box.run_done_items += len(unit_roms)
             box.run_skip_rebuilt_rows.update((rom["id"], rom["platform_slug"]) for rom in unit_roms)
+            await self._esde_stand_ins.place(unit, unit_roms, {rom["id"] for rom in unit_roms}, skipped=True)
             return len(unit_roms)
 
         # Build shortcut data for every fetched ROM. Installed ROMs carry the
@@ -1229,7 +1224,7 @@ class SyncOrchestrator:
         # a same-named sibling collection can't shadow this unit's members (#1503).
         collection_member_ids = None
         if unit.type == "collection":
-            membership = collection_memberships.get(_collection_membership_key(unit))
+            membership = collection_memberships.get(CollectionMembership.key_of(unit))
             collection_member_ids = membership.rom_ids if membership is not None else None
 
         applied_count = await self._chunk_dispatcher.apply_unit_in_chunks(
@@ -1245,6 +1240,8 @@ class SyncOrchestrator:
             collection_member_ids=collection_member_ids,
             fetch_started_at=fetch_started_at,
         )
+        if not box.is_cancelling():
+            await self._esde_stand_ins.place(unit, unit_roms, {entry["rom_id"] for entry in emitted})
         return len(skip_ids) + applied_count
 
     async def _sync_platform_unit(
@@ -1294,7 +1291,7 @@ class SyncOrchestrator:
             unit, synced_rom_ids, progress_step=progress_step, progress_total_steps=progress_total_steps
         )
         if all_collection_rom_ids:
-            collection_memberships[_collection_membership_key(unit)] = CollectionMembership.of(
+            collection_memberships[CollectionMembership.key_of(unit)] = CollectionMembership.of(
                 unit, all_collection_rom_ids
             )
         return unit_roms, skipped
@@ -1335,6 +1332,7 @@ class SyncOrchestrator:
         candidates: list[StaleRow] = []
         group_keys: dict[int, str] = {}
         if not cancelled:
+            await self._esde_stand_ins.settle()
             candidates = await self._loop.run_in_executor(
                 None,
                 self._local_library_reader.do_scan_stale_roms,
