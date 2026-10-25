@@ -33,6 +33,7 @@ if TYPE_CHECKING:
         Clock,
         ConflictRules,
         DownloadQueueCleanup,
+        EsdeStandInGuard,
         EventEmitter,
         RetroDeckFolders,
         RomFileStore,
@@ -70,6 +71,8 @@ class RomRemovalServiceConfig:
     download cleanup is wired), the SQLite Unit-of-Work factory (the transactional seam over the
     ``rom_installs`` repository), and the ``ConflictRules`` a use case an
     endpoint calls checks at its entry and takes its lease through.
+    ``stand_ins`` are ES-DE's, which an uninstall the user asked for puts back;
+    ``None`` where nothing places any.
     Decomposes the ctor so a new dependency does not push past the S107
     parameter-count limit.
     """
@@ -83,6 +86,7 @@ class RomRemovalServiceConfig:
     download_queue_cleanup: DownloadQueueCleanup | None
     uow_factory: UnitOfWorkFactory
     conflict_rules: ConflictRules
+    stand_ins: EsdeStandInGuard | None = None
 
 
 class RomRemovalService:
@@ -108,6 +112,7 @@ class RomRemovalService:
         self._download_queue_cleanup = config.download_queue_cleanup
         self._uow_factory = config.uow_factory
         self._rules = config.conflict_rules
+        self._stand_ins = config.stand_ins
         self._tasks = BackgroundTasks(logger=config.logger)
         # Read and written only on the loop thread — every mutation brackets a
         # ``run_in_executor`` call, or runs in that call's completion callback,
@@ -317,10 +322,13 @@ class RomRemovalService:
 
         :meth:`remove_rom_unchecked` under the endpoint's conflict rules. A
         removal that succeeded carries a ``rom_uninstall`` lease in
-        ``prune_lease_token`` for the frontend's Steam writes.
+        ``prune_lease_token`` for the frontend's Steam writes, and puts the
+        game's ES-DE stand-in back. The twin does not: a sibling superseded by
+        another version's install stops being the game ES-DE lists.
         """
         async with self._rules.hold("remove_rom", update=True, migration=True, prune=True):
             result = await self.remove_rom_unchecked(rom_id)
+            await self._restore_stand_ins([int(rom_id)])
             result["prune_lease_token"] = await self._rules.acquire_lease("rom_uninstall")
             return result
 
@@ -380,6 +388,7 @@ class RomRemovalService:
             self._logger.info(f"Forget download refused: rom_id={rom_id}: {present} exists")
             raise FilePresent(f"The recorded download exists: {present}", path=present)
         self._complete_removal(rom_id, "Forget download", started)
+        await self._restore_stand_ins([rom_id])
         return {"success": True, "message": "Download forgotten"}
 
     def _admit_removal(self, rom_id: int, in_progress_message: str) -> RomInstall:
@@ -590,4 +599,12 @@ class RomRemovalService:
         )
         if self._download_queue_cleanup is not None:
             self._download_queue_cleanup.clear()
+        failed = {error["rom_id"] for error in errors}
+        await self._restore_stand_ins(rom_id for rom_id in sorted(claimed) if str(rom_id) not in failed)
         return count, errors, app_ids
+
+    async def _restore_stand_ins(self, rom_ids: Iterable[int]) -> None:
+        """Put back the ES-DE stand-in of each of *rom_ids*, whose install record this removal dropped."""
+        if self._stand_ins is not None:
+            for rom_id in rom_ids:
+                await self._stand_ins.restore(rom_id)

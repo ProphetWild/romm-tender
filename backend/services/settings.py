@@ -30,7 +30,13 @@ from lib.steam_input_apply import SteamInputApply
 from lib.url_host import ENTERED_ADDRESS_WITH_USERINFO_MESSAGE, carries_userinfo, is_valid_server_url
 
 if TYPE_CHECKING:
-    from services.protocols import ConflictRules, SettingsPersister, SteamConfigStore, UnitOfWorkFactory
+    from services.protocols import (
+        ConflictRules,
+        LibrarySurfaceListener,
+        SettingsPersister,
+        SteamConfigStore,
+        UnitOfWorkFactory,
+    )
 
 
 _MASK_PLACEHOLDER = "••••"
@@ -97,8 +103,9 @@ class SettingsServiceConfig:
     ``apply_steam_input_setting`` re-skins), plus the runtime
     infrastructure (logger, settings persister, steam-config adapter), and the
     ``ConflictRules`` the server-URL, custom-header and Steam Input writes check
-    at their entry. Bundled here so the ctor stays within the S107 parameter
-    budget.
+    at their entry. ``surface_listener`` is told each library surface stored;
+    ``None`` where nothing listens. Bundled here so the ctor stays within the
+    S107 parameter budget.
     """
 
     settings: dict[str, Any]
@@ -107,6 +114,7 @@ class SettingsServiceConfig:
     settings_persister: SettingsPersister
     steam_config: SteamConfigStore
     conflict_rules: ConflictRules
+    surface_listener: LibrarySurfaceListener | None = None
 
 
 class SettingsService:
@@ -144,6 +152,7 @@ class SettingsService:
         self._settings_persister = config.settings_persister
         self._steam_config = config.steam_config
         self._rules = config.conflict_rules
+        self._surface_listener = config.surface_listener
 
     # ── Server connection settings ───────────────────────────────────────
 
@@ -440,17 +449,21 @@ class SettingsService:
 
     # ── Library surface ─────────────────────────────────────────────────
 
-    def set_library_surface(self, surface: object) -> dict[str, Any]:
+    async def set_library_surface(self, surface: object) -> dict[str, Any]:
         """Validate and persist where a library sync puts the library (``"steam"`` / ``"esde"`` / ``"both"``).
 
         Takes effect from the next library sync. An unrecognised value from the
         untrusted frontend wire is refused with ``invalid_library_surface`` so a
-        bad call cannot corrupt the setting.
+        bad call cannot corrupt the setting. Once persisted, the surface
+        listener is told the surface stored, the same one again included.
         """
         if surface not in LIBRARY_SURFACES:
             raise Refused("invalid_library_surface", f"Invalid library surface: {surface}")
-        self._settings["library_surface"] = surface
+        stored = library_surface(surface)
+        self._settings["library_surface"] = stored
         self._settings_persister.save_settings()
+        if self._surface_listener is not None:
+            await self._surface_listener.surface_stored(stored)
         return {"success": True}
 
     # ── Corrupt-settings reset notice ───────────────────────────────────

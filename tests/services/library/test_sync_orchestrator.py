@@ -8720,6 +8720,7 @@ class TestStandInsUnderASurfaceThatWritesEsde:
                 romm_api=fake_romm_api,
                 uow_factory=FakeUnitOfWorkFactory(uow=library.uow),
                 settings=library.settings,
+                active_downloads=set,
                 loop=asyncio.get_running_loop(),
                 logger=logging.getLogger("esde"),
                 log_debug=lambda msg: None,

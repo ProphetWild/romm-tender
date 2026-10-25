@@ -46,6 +46,7 @@ if TYPE_CHECKING:
         ConflictRules,
         DownloadFileStore,
         DownloadTargetGateFn,
+        EsdeStandInGuard,
         EventEmitter,
         PlatformSystems,
         RetroDeckFolders,
@@ -108,7 +109,8 @@ class DownloadServiceConfig:
     ``target_gate`` is the pre-flight that refuses to write over content
     Tender did not put there (ADR-0028). ``conflict_rules`` are what a start or
     resume checks at its entry, and what a download's task and its
-    ``download_complete`` lease are held through.
+    ``download_complete`` lease are held through. ``stand_ins`` is ES-DE's,
+    which a download clears its target of and puts back where it lands nothing.
     """
 
     romm_api: RommRomReader
@@ -129,6 +131,7 @@ class DownloadServiceConfig:
     # root binds it after both exist.
     rom_remover: RomRemoverProvider
     conflict_rules: ConflictRules
+    stand_ins: EsdeStandInGuard | None = None
 
 
 class DownloadService:
@@ -155,6 +158,7 @@ class DownloadService:
         self._uow_factory = config.uow_factory
         self._rom_remover = config.rom_remover
         self._rules = config.conflict_rules
+        self._stand_ins = config.stand_ins
         self._tasks = BackgroundTasks(logger=config.logger)
 
         # Owned state
@@ -330,15 +334,30 @@ class DownloadService:
         gate returns is answered as it came, with the claim given back. Of what the steps raise, an ``OSError`` (a
         disk that cannot be read or prepared) is refused here with ``download_start_failed``; a RomM error and a
         refusal pass on unchanged (which: ``docs/architecture/backend-architecture.md``), and anything else is a bug.
+
+        The game's own stand-in is cleared once the claim is held, which keeps the stand-in pass from putting it back
+        while the start runs, and before any step could read it as content. A start that starts nothing puts back
+        what it cleared, after giving the claim back, since a restore declines a claimed game.
         """
         self._download_in_progress.add(rom_id)
+        cleared = False
         try:
-            return await self._start_claimed_download(
+            cleared = self._stand_ins is not None and await self._stand_ins.clear_for_download(rom_id)
+            started = await self._start_claimed_download(
                 rom_id, resume=resume, replace_existing=replace_existing, **answer
             )
         except BaseException:
             self._download_in_progress.discard(rom_id)
+            if cleared:
+                await self._restore_stand_in(rom_id)
             raise
+        if cleared and not isinstance(started, dict):
+            await self._restore_stand_in(rom_id)
+        return started
+
+    async def _restore_stand_in(self, rom_id: int) -> None:
+        if self._stand_ins is not None:
+            await self._stand_ins.restore(rom_id)
 
     def _download_platform_io(self, platform_slug: str) -> PlatformSystem:
         """The platform's system in RetroDECK, which a download lands in. Blocking: it may read RomM's listing."""
@@ -844,6 +863,7 @@ class DownloadService:
         # handler can reconcile a race-committed install (#1049). Stays ``None``
         # while waiting on the concurrency semaphore or during the transfer.
         post_io_future: asyncio.Future[tuple[str | None, str | None]] | None = None
+        landed_nothing = False
 
         try:
             self._logger.info(f"Download starting: {rom_name} (rom_id={rom_id}, multi={has_multiple}) -> {target_path}")
@@ -957,25 +977,13 @@ class DownloadService:
                 )
                 self._logger.info(f"Download paused: {rom_name}")
             else:
+                landed_nothing = True
                 entry = self._download_queue[rom_id]
                 entry["status"] = "cancelled"
                 self._cleanup_partial_download(target_path, has_multiple, extract_dir_name, final_path)
                 # #1017: emit a terminal frame so the frontend resets the button
                 # out of its downloading state (the global cancel path was silent).
-                await self._emit(
-                    "download_progress",
-                    {
-                        "rom_id": rom_id,
-                        "rom_name": rom_name,
-                        "platform_name": platform_name,
-                        "file_name": file_name,
-                        "status": "cancelled",
-                        "progress": entry.get("progress", 0),
-                        "bytes_downloaded": entry.get("bytes_downloaded", 0),
-                        "total_bytes": entry.get("total_bytes", 0),
-                        "resumable": entry.get("resumable", False),
-                    },
-                )
+                await self._emit("download_progress", cancelled_frame(rom_id, entry))
                 # A cancel is an explicit discard — drop the entry so no
                 # "cancelled" row lingers in the queue view or QAM summary (#149
                 # downloads-round). The terminal frame above already told the
@@ -986,6 +994,7 @@ class DownloadService:
             raise
 
         except Exception as e:
+            landed_nothing = True
             self._download_queue[rom_id]["status"] = "failed"
             self._download_queue[rom_id]["error"] = str(e)
             self._cleanup_failed_download(e, target_path, has_multiple, extract_dir_name, final_path)
@@ -1006,6 +1015,10 @@ class DownloadService:
                 self._reserved_bytes.pop(rom_id, None)
                 del self._control_tokens[rom_id]
             self._prune_download_queue()
+            # After the claim is given back, since a restore declines a claimed
+            # game. A paused download keeps no stand-in: its resume takes the path.
+            if landed_nothing:
+                await self._restore_stand_in(rom_id)
 
     async def _fetch_unless_whole(
         self, rom_id, rom_detail, file_name, target_path, progress_callback, partial_path, *, resume, on_meta
@@ -1119,6 +1132,8 @@ class DownloadService:
         # same way the progress callbacks do.
         self._tasks.spawn(self._emit("download_progress", cancelled_frame(rom_id, entry)), "download_progress")
         self.evict(rom_id)
+        if self._stand_ins is not None:
+            self._tasks.spawn(self._stand_ins.restore(rom_id), "stand-in restore")
 
     def pause_download(self, rom_id):
         """Pause an in-flight download, keeping the partial ``.tmp`` for resume.

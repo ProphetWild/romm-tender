@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -105,6 +106,8 @@ class Harness:
     platform_systems: FakePlatformSystems
     settings: dict[str, Any]
     m3u: dict[str, bool]
+    # The games whose download is in flight or queued.
+    active: set[int]
 
     def install(self, rom_id: int, slug: str = "gba") -> None:
         with self.uow:
@@ -143,6 +146,7 @@ async def h(logger) -> Harness:
     platform_systems = FakePlatformSystems()
     settings: dict[str, Any] = {"library_surface": "esde"}
     m3u: dict[str, bool] = {}
+    active: set[int] = set()
     service = EsdeStandInService(
         config=EsdeStandInServiceConfig(
             stand_ins=store,
@@ -153,12 +157,13 @@ async def h(logger) -> Harness:
             romm_api=romm_api,
             uow_factory=FakeUnitOfWorkFactory(uow),
             settings=settings,
+            active_downloads=lambda: set(active),
             loop=asyncio.get_running_loop(),
             logger=logger,
             log_debug=lambda msg: None,
         )
     )
-    return Harness(service, store, index, romm_api, uow, folders, platform_systems, settings, m3u)
+    return Harness(service, store, index, romm_api, uow, folders, platform_systems, settings, m3u, active)
 
 
 async def _run(
@@ -433,6 +438,19 @@ class TestARunsEnd:
 
 
 class TestOneGame:
+    def test_the_game_a_stand_in_or_a_file_directly_inside_a_stand_in_folder_stands_for(self, h):
+        h.store.links[f"{_ROMS}/psx/Disc.m3u"] = (
+            3,
+            StandInShape(name="Disc.m3u", kind=FOLDER_SHAPE, launch_name="Disc.m3u"),
+        )
+        h.store.links[_gba_path(1)] = (1, _gba_shape(1))
+
+        assert h.service.do_stand_in_at(f"{_ROMS}/psx/Disc.m3u") == 3
+        assert h.service.do_stand_in_at(f"{_ROMS}/psx/Disc.m3u/Disc.m3u") == 3
+        assert h.service.do_stand_in_at(_gba_path(1)) == 1
+        assert h.service.do_stand_in_at(f"{_ROMS}/psx/Other.m3u") is None
+        assert h.service.do_stand_in_at(f"{_ROMS}/psx/Disc.m3u/inner/Disc.m3u") is None
+
     async def test_a_stand_in_and_a_file_inside_a_stand_in_folder_are_stand_ins(self, h):
         h.store.links[f"{_ROMS}/psx/Disc.m3u"] = (
             3,
@@ -498,3 +516,97 @@ class TestRemovingAll:
         assert h.store.links == {}
         assert h.index.index == {}
         assert f"{_ROMS}/gba/Mine.gba" in h.store.others
+
+
+class TestAGameBeingDownloaded:
+    """A game whose download is in flight or queued gets no stand-in until the download ends."""
+
+    async def test_a_run_records_its_stand_in_and_places_none(self, h):
+        h.active.add(1)
+
+        await _run(h, (_platform("gba"), [_file_rom(1), _file_rom(2)], None))
+
+        assert list(h.store.links) == [_gba_path(2)]
+        assert h.index.index[1] == _gba_record(1)
+
+    async def test_a_download_claimed_while_the_run_decided_still_gets_none(self, h):
+        read = h.index.read
+
+        def read_as_a_download_is_claimed():
+            h.active.add(1)
+            return read()
+
+        h.index.read = read_as_a_download_is_claimed
+        h.service.begin_run("esde")
+
+        await h.service.place(_platform("gba"), [_file_rom(1)], {1})
+
+        assert h.store.links == {}
+
+    async def test_a_restore_puts_nothing_back_while_its_download_is_under_way(self, h):
+        h.index.index = {1: _gba_record(1)}
+        h.active.add(1)
+
+        assert await h.service.restore(1) is False
+        assert h.store.links == {}
+
+        h.active.clear()
+
+        assert await h.service.restore(1) is True
+        assert list(h.store.links) == [_gba_path(1)]
+
+
+class TestLeavingEsde:
+    async def test_storing_a_surface_that_writes_no_esde_removes_every_stand_in(self, h):
+        await _run(h, (_platform("gba"), [_file_rom(1), _file_rom(2)], None))
+        h.store.others.add(f"{_ROMS}/gba/Mine.gba")
+        h.settings["library_surface"] = "steam"
+
+        await h.service.surface_stored("steam")
+
+        assert h.store.links == {}
+        assert h.index.index == {}
+        assert h.store.others == {f"{_ROMS}/gba/Mine.gba"}
+
+    @pytest.mark.parametrize("surface", ["esde", "both"])
+    async def test_storing_a_surface_that_writes_esde_removes_nothing(self, h, surface):
+        await _run(h, (_platform("gba"), [_file_rom(1)], None))
+
+        await h.service.surface_stored(surface)
+
+        assert list(h.store.links) == [_gba_path(1)]
+        assert set(h.index.index) == {1}
+
+    async def test_a_run_under_way_places_nothing_once_esde_is_left(self, h):
+        h.service.begin_run("esde")
+        await h.service.place(_platform("gba"), [_file_rom(1)], {1})
+        h.settings["library_surface"] = "steam"
+
+        await h.service.surface_stored("steam")
+        await h.service.place(_platform("gba"), [_file_rom(2)], {2})
+        await h.service.settle()
+
+        assert h.store.links == {}
+        assert h.index.index == {}
+
+    async def test_a_unit_decided_across_the_switch_places_nothing(self, h):
+        read, deciding, go = h.index.read, threading.Event(), threading.Event()
+
+        def read_held_once():
+            if not deciding.is_set():
+                deciding.set()
+                go.wait(5)
+            return read()
+
+        h.index.read = read_held_once
+        h.service.begin_run("esde")
+        placing = asyncio.create_task(h.service.place(_platform("gba"), [_file_rom(1)], {1}))
+        while not deciding.is_set():
+            await asyncio.sleep(0.001)
+        h.settings["library_surface"] = "steam"
+
+        await h.service.surface_stored("steam")
+        go.set()
+        await placing
+
+        assert h.store.links == {}

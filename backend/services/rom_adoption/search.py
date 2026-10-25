@@ -46,6 +46,7 @@ if TYPE_CHECKING:
     from services.protocols import (
         DebugLogger,
         DownloadFileStore,
+        EsdeStandInGuard,
         PlatformSystems,
         RetroDeckFolders,
         SystemKnownFn,
@@ -88,7 +89,8 @@ class CandidateSearchConfig:
     source, ``es_systems.xml``: whether the directory about to be searched is a
     system at all, and what that system accepts. Both answer default-safe when
     the file cannot be read, and the search must not turn either silence into a
-    refusal.
+    refusal. ``stand_ins`` names ES-DE's stand-ins, which are Tender's own links
+    and never a copy the user placed; ``None`` where nothing places any.
     """
 
     download_file_store: DownloadFileStore
@@ -99,6 +101,7 @@ class CandidateSearchConfig:
     uow_factory: UnitOfWorkFactory
     logger: logging.Logger
     log_debug: DebugLogger
+    stand_ins: EsdeStandInGuard | None = None
 
 
 class CandidateSearch:
@@ -113,6 +116,7 @@ class CandidateSearch:
         self._uow_factory = config.uow_factory
         self._logger = config.logger
         self._log_debug = config.log_debug
+        self._stand_ins = config.stand_ins
 
     # ── The Download click's half ───────────────────────────────────
 
@@ -287,20 +291,25 @@ class CandidateSearch:
         wanted: frozenset[str],
         covered: frozenset[str],
     ) -> tuple[EntryT, ...]:
-        """Every name-matching entry in *entries*, of every kind.
+        """Every name-matching entry in *entries*, of every kind, but an ES-DE stand-in.
 
         One pass, because the caller decides what each kind means: for the page
         any namesake is enough, and for the click path the kind is what separates
-        a candidate from something to warn about.
+        a candidate from something to warn about. A stand-in is Tender's own
+        link, a sibling's as much as this game's, so it is no copy of the game.
         """
         if not entries or not self._searchable_dir(system):
             return ()
-        return matching_entries(
+        found = matching_entries(
             entries,
             wanted_names=wanted,
             accepted_extensions=self._system_extensions(system),
             covered_paths=covered,
         )
+        stand_ins = self._stand_ins
+        if stand_ins is None:
+            return found
+        return tuple(entry for entry in found if stand_ins.do_stand_in_at(entry.path) is None)
 
     def _matches(
         self,

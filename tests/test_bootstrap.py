@@ -843,7 +843,7 @@ class TestWireServices:
     def test_returns_expected_services(self, tmp_path):
         deps = self._make_deps(tmp_path)
         result = wire_services(self._make_config(deps))
-        assert len(fields(result)) == 37
+        assert len(fields(result)) == 38
         assert all(getattr(result, field.name) is not None for field in fields(result))
         assert isinstance(result.prune_conflicts, PruneConflicts)
         assert isinstance(result.core_service, CoreService)
@@ -875,6 +875,23 @@ class TestWireServices:
         assert stand_ins._index is deps["esde_stand_in_index"]
         assert stand_ins._retrodeck_folders is deps["retrodeck_folders"]
         assert stand_ins._settings is deps["settings"]
+        assert result.esde_stand_in_service is stand_ins
+        deps["loop"].close()
+
+    def test_every_consumer_of_the_stand_ins_holds_the_sync_s_and_it_reads_the_downloads_under_way(self, tmp_path):
+        deps = self._make_deps(tmp_path)
+        result = wire_services(self._make_config(deps))
+        stand_ins = result.esde_stand_in_service
+
+        assert result.download_service._stand_ins is stand_ins
+        assert result.rom_removal_service._stand_ins is stand_ins
+        assert result.rom_adoption_service._stand_ins is stand_ins
+        assert result.rom_adoption_service._search._stand_ins is stand_ins
+        assert result.rom_adoption_service._renamer._stand_ins is stand_ins
+        assert result.game_detail_service._stand_ins is stand_ins
+        assert result.settings_service._surface_listener is stand_ins
+        result.download_service._download_in_progress.add(7)
+        assert stand_ins._active_downloads() == {7}
         deps["loop"].close()
 
     def test_the_artwork_job_reads_the_cleanup_the_sync_and_the_removal_it_yields_to(self, tmp_path):

@@ -49,7 +49,8 @@ class FakeAdoptionMoveStore:
         )
 
     def exists(self, path: str) -> bool:
-        return self._store.exists(path)
+        # ``lexists``, as the adapter's: a link occupies its name.
+        return self._store.exists(path) or path in self._store.links
 
     def is_file(self, path: str) -> bool:
         return path in self._store.files

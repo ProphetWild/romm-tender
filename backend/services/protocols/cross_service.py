@@ -892,6 +892,44 @@ class EsdeStandInPass(Protocol):
     async def settle(self) -> None: ...
 
 
+class EsdeStandInGuard(Protocol):
+    """What a download, an uninstall, an adoption and the game page ask of ES-DE's stand-ins.
+
+    The composition root satisfies this with ``EsdeStandInService``; a consumer
+    that holds ``None`` instead treats nothing as a stand-in.
+    """
+
+    def do_stand_in_at(self, path: str) -> int | None:
+        """The game a stand-in at *path*, or one *path* lies directly inside, stands in for; else ``None``.
+
+        Synchronous and never follows a link, so a consumer running off the loop
+        asks it there.
+        """
+        ...
+
+    async def clear_for_download(self, rom_id: int) -> bool:
+        """Remove *rom_id*'s own stand-in so something real can take its path; whether one was removed."""
+        ...
+
+    async def restore(self, rom_id: int) -> bool:
+        """Put *rom_id*'s stand-in back where nothing real took its path; whether it stands there now.
+
+        Declines while the game is installed or downloading, and while the
+        library surface writes no ES-DE.
+        """
+        ...
+
+
+class LibrarySurfaceListener(Protocol):
+    """What is told each time the library surface setting is stored, after it is persisted.
+
+    The composition root satisfies this with ``EsdeStandInService``, which
+    removes every stand-in once the surface stored writes no ES-DE.
+    """
+
+    async def surface_stored(self, surface: LibrarySurface) -> None: ...
+
+
 class ShortcutArtworkJob(Protocol):
     """What a sync, a removed-game cleanup and a shortcut removal ask of the shortcut artwork job."""
 

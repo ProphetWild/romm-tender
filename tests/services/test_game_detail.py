@@ -9,6 +9,7 @@ import pytest
 from _factories import _make_conflict_rules
 from fakes.fake_active_core_resolver import FakeActiveCoreResolver
 from fakes.fake_core_info_provider import FakeCoreInfoProvider
+from fakes.fake_esde_stand_in_guard import FakeEsdeStandInGuard
 from fakes.fake_firmware_resolver import FakeFirmwareResolver
 from fakes.fake_path_exists_reader import FakePathExistsReader
 from fakes.fake_platform_core_reader import FakePlatformCoreReader
@@ -77,6 +78,7 @@ class GameDetailHarness:
     firmware: FirmwareService
     uow: FakeUnitOfWork
     settings: dict[str, Any]
+    stand_ins: FakeEsdeStandInGuard
     candidate_present: bool = False
     candidate_probe_calls: list[tuple[str, str]] = field(default_factory=list)
 
@@ -144,6 +146,8 @@ def game_detail(clock, active_core_resolver, path_probe) -> GameDetailHarness:
         harness.candidate_probe_calls.append((platform_slug, fs_name))
         return harness.candidate_present
 
+    stand_ins = FakeEsdeStandInGuard()
+
     service = GameDetailService(
         config=GameDetailServiceConfig(
             settings=settings,
@@ -158,10 +162,11 @@ def game_detail(clock, active_core_resolver, path_probe) -> GameDetailHarness:
             retrodeck_folders=FakeRetroDeckFolders(roms=_ROMS_BASE),
             platform_systems=FakePlatformSystems(),
             candidate_probe=candidate_probe,
+            stand_ins=stand_ins,
         ),
     )
     harness = GameDetailHarness(
-        service=service, achievements=achievements, firmware=firmware, uow=uow, settings=settings
+        service=service, achievements=achievements, firmware=firmware, uow=uow, settings=settings, stand_ins=stand_ins
     )
     return harness
 
@@ -532,6 +537,70 @@ class TestFileMissingAt:
 
         assert result["installed"] is False
         assert result["file_missing_at"] is None
+
+
+class TestAStandInIsNoFileOfTheGames:
+    """An ES-DE stand-in is Tender's own link: the page's probes never read one as the game's file."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("stands_for", [10, 7])
+    async def test_a_stand_in_at_the_target_path_is_no_occupied_target(self, game_detail, path_probe, stands_for):
+        _seed_rom(game_detail, 10, app_id=50000, platform_slug="snes", fs_name="game_10.sfc")
+        target = f"{_ROMS_BASE}/snes/game_10.sfc"
+        path_probe.paths.add(target)
+        game_detail.stand_ins.stand_ins[target] = stands_for
+
+        result = await game_detail.service.get_cached_game_detail(50000)
+
+        assert result["target_path_occupied"] is False
+
+    @pytest.mark.asyncio
+    async def test_a_stand_in_where_an_install_s_file_was_is_a_missing_file(self, game_detail, path_probe):
+        from domain.rom_install import RomInstall
+
+        _seed_rom(game_detail, 10, app_id=50000, platform_slug="snes")
+        file_path = f"{_ROMS_BASE}/snes/game.sfc"
+        with game_detail.uow:
+            game_detail.uow.rom_installs.save(
+                RomInstall.mark_installed(
+                    rom_id=10,
+                    file_path=file_path,
+                    rom_dir=None,
+                    platform_slug="snes",
+                    system="snes",
+                    installed_at="2025-01-01T00:00:00",
+                )
+            )
+        path_probe.paths.add(file_path)
+        game_detail.stand_ins.stand_ins[file_path] = 10
+
+        result = await game_detail.service.get_cached_game_detail(50000)
+
+        assert result["file_missing_at"] == file_path
+
+    @pytest.mark.asyncio
+    async def test_a_stand_in_folder_where_a_folder_download_was_is_a_missing_folder(self, game_detail, path_probe):
+        from domain.rom_install import RomInstall
+
+        _seed_rom(game_detail, 10, app_id=50000, platform_slug="psx")
+        rom_dir = f"{_ROMS_BASE}/psx/FF7.m3u"
+        with game_detail.uow:
+            game_detail.uow.rom_installs.save(
+                RomInstall.mark_installed(
+                    rom_id=10,
+                    file_path=f"{rom_dir}/FF7.m3u",
+                    rom_dir=rom_dir,
+                    platform_slug="psx",
+                    system="psx",
+                    installed_at="2025-01-01T00:00:00",
+                )
+            )
+        path_probe.paths.update({rom_dir, f"{rom_dir}/FF7.m3u"})
+        game_detail.stand_ins.stand_ins[rom_dir] = 10
+
+        result = await game_detail.service.get_cached_game_detail(50000)
+
+        assert result["file_missing_at"] == rom_dir
 
 
 class TestTargetPathOccupied:

@@ -30,6 +30,7 @@ from fakes.fake_active_core_resolver import FakeActiveCoreResolver
 from fakes.fake_adoption_move import FakeAdoptionMoveStore
 from fakes.fake_disc_resolver import FakeDiscResolver
 from fakes.fake_download_file_store import FakeDownloadFileStore
+from fakes.fake_esde_stand_in_guard import FakeEsdeStandInGuard
 from fakes.fake_platform_systems import RETRODECK_SOURCE, FakePlatformSystems
 from fakes.fake_retrodeck_folders import FakeRetroDeckFolders
 from fakes.fake_romm_api import FakeRommApi
@@ -206,6 +207,9 @@ class Harness:
         # so the search behaves exactly as it did before the check existed.
         self.known_systems: dict[str, bool | None] = {}
         self.debug_log: list[str] = []
+        # ES-DE's stand-ins: none unless a test places one, as both on disk
+        # (``store.links``) and here.
+        self.stand_ins = FakeEsdeStandInGuard()
         self.prune_conflicts = _make_prune_conflicts()
         self.service = RomAdoptionService(
             config=RomAdoptionServiceConfig(
@@ -231,6 +235,7 @@ class Harness:
                 emit=self._emit,
                 clock=self.clock,
                 conflict_rules=_make_conflict_rules(prune_conflicts=self.prune_conflicts),
+                stand_ins=self.stand_ins,
             ),
         )
 
@@ -283,6 +288,16 @@ class Harness:
 
     def stage_detail(self, detail: dict[str, Any]) -> None:
         self.romm_api.roms[_ROM_ID] = detail
+
+    def place_stand_in(self, path: str, rom_id: int) -> None:
+        """A stand-in of *rom_id*'s at *path*: a link on disk, and the guard's answer for it."""
+        self.store.links[path] = f"/cache/esde/stand-ins/{rom_id}/{path.rsplit('/', 1)[-1]}"
+        self.stand_ins.stand_ins[path] = rom_id
+
+        def unlink(gone: str) -> None:
+            self.store.links.pop(gone, None)
+
+        self.stand_ins.unlink = unlink
 
 
 @pytest.fixture
@@ -3638,3 +3653,136 @@ class TestASingleZipsUnpackedFolder:
         assert result["message"] == (
             "The server does not list what is inside this game's zip, so a folder cannot be confirmed against it"
         )
+
+
+class TestAStandInIsNoContentOfTheUsers:
+    """A stand-in is Tender's own link, so the search never reads one as a copy the user placed."""
+
+    async def test_a_sibling_s_stand_in_is_no_namesake_for_a_download(self, h):
+        h.system_extensions = {"snes": frozenset({".sfc"})}
+        h.place_stand_in("/roms/snes/Game (E).sfc", 7)
+
+        checking = h.service.check_download_target(
+            _single_file_detail(name="Game (USA).sfc"), "/roms/snes/Game (USA).sfc", replace=False
+        )
+
+        assert await checking is None
+
+    async def test_a_sibling_s_stand_in_is_no_candidate_on_the_page(self, h):
+        h.system_extensions = {"snes": frozenset({".sfc"})}
+        h.place_stand_in("/roms/snes/Game (E).sfc", 7)
+
+        assert h.service.has_adoption_candidate("snes", "Game (USA).sfc") is False
+
+    async def test_the_game_s_own_folder_stand_in_is_no_candidate_on_the_page(self, h):
+        h.system_extensions = {"psx": frozenset({".cue", ".m3u"})}
+        h.place_stand_in("/roms/psx/Game.m3u", _ROM_ID)
+
+        assert h.service.has_adoption_candidate("psx", "Game") is False
+
+    async def test_a_copy_of_the_user_s_beside_a_stand_in_is_still_a_candidate(self, h):
+        h.system_extensions = {"snes": frozenset({".sfc"})}
+        h.place_stand_in("/roms/snes/Game (E).sfc", 7)
+        h.store.files["/roms/snes/Game (U).sfc"] = b"mine"
+
+        checking = h.service.check_download_target(
+            _single_file_detail(name="Game (USA).sfc"), "/roms/snes/Game (USA).sfc", replace=False
+        )
+
+        with pytest.raises(AdoptionCandidates) as refused:
+            await checking
+
+        assert [candidate["name"] for candidate in refused.value.details["candidates"]] == ["Game (U).sfc"]
+
+    async def test_a_link_of_somebody_else_s_is_still_an_unusable_namesake(self, h):
+        h.system_extensions = {"snes": frozenset({".sfc"})}
+        h.place_stand_in("/roms/snes/Game (E).sfc", 7)
+        h.store.links["/roms/snes/Game (J).sfc"] = "/roms/snes/real.sfc"
+
+        checking = h.service.check_download_target(
+            _single_file_detail(name="Game (USA).sfc"), "/roms/snes/Game (USA).sfc", replace=False
+        )
+
+        with pytest.raises(UnusableNamesake) as refused:
+            await checking
+
+        assert [entry["name"] for entry in refused.value.details["existing"]] == ["Game (J).sfc"]
+
+
+class TestAdoptingOverTheGamesOwnStandIn:
+    """The game's own stand-in at the canonical name gives way to its rename; anything else there stays taken."""
+
+    async def test_the_stand_in_is_cleared_and_the_candidate_renamed_into_its_place(self, h):
+        h.seed_rom()
+        h.stage_detail(_single_file_detail())
+        h.store.files[_OLD] = b"rom"
+        h.place_stand_in(_NEW, _ROM_ID)
+
+        result = await h.service.adopt_existing_rom(_ROM_ID, _OLD, None)
+
+        assert result["success"] is True
+        assert h.store.files[_NEW] == b"rom"
+        assert _NEW not in h.store.links
+        assert h.stand_ins.calls == [("clear", _ROM_ID)]
+
+    async def test_another_game_s_stand_in_at_the_canonical_name_is_taken(self, h):
+        h.seed_rom()
+        h.stage_detail(_single_file_detail())
+        h.store.files[_OLD] = b"rom"
+        h.place_stand_in(_NEW, 7)
+
+        adopting = h.service.adopt_existing_rom(_ROM_ID, _OLD, None)
+
+        with pytest.raises(Refused) as refused:
+            await adopting
+
+        assert refused.value.reason == "target_taken"
+        assert h.move.moves == []
+        assert _NEW in h.store.links
+        assert h.stand_ins.calls == []
+
+    async def test_a_stand_in_that_stays_refuses_the_rename(self, h):
+        h.seed_rom()
+        h.stage_detail(_single_file_detail())
+        h.store.files[_OLD] = b"rom"
+        h.place_stand_in(_NEW, _ROM_ID)
+        h.stand_ins.unlink = lambda path: None
+        h.stand_ins.clear_answer = False
+
+        adopting = h.service.adopt_existing_rom(_ROM_ID, _OLD, None)
+
+        with pytest.raises(Refused) as refused:
+            await adopting
+
+        assert refused.value.reason == "target_taken"
+        assert h.move.moves == []
+        assert h.stand_ins.calls == [("clear", _ROM_ID)]
+
+    async def test_an_adoption_that_records_nothing_puts_the_stand_in_back(self, h):
+        h.seed_rom()
+        h.stage_detail(_single_file_detail())
+        h.store.files[_OLD] = b"rom"
+        h.place_stand_in(_NEW, _ROM_ID)
+        h.supersede_refusal = Refused("uninstall_failed", "Failed to delete ROM files")
+
+        adopting = h.service.adopt_existing_rom(_ROM_ID, _OLD, None)
+
+        with pytest.raises(Refused):
+            await adopting
+
+        assert h.uow.rom_installs.get(_ROM_ID) is None
+        assert h.stand_ins.calls == [("clear", _ROM_ID), ("restore", _ROM_ID)]
+
+    async def test_a_stand_in_at_the_game_s_own_target_is_never_adopted(self, h):
+        h.seed_rom()
+        h.stage_detail(_single_file_detail())
+        h.place_stand_in(_NEW, _ROM_ID)
+
+        adopting = h.service.adopt_existing_rom(_ROM_ID, None, None)
+
+        with pytest.raises(Refused) as refused:
+            await adopting
+
+        assert refused.value.reason == "unexpected_content_kind"
+        assert h.uow.rom_installs.get(_ROM_ID) is None
+        assert h.stand_ins.calls == []

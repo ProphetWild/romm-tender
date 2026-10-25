@@ -1129,29 +1129,65 @@ class TestSetQamEntryPosition:
         settings_persister.save_settings.assert_not_called()
 
 
+class _RecordingSurfaceListener:
+    """Records each surface it is told was stored, with whether it was persisted by then."""
+
+    def __init__(self, settings_persister: MagicMock) -> None:
+        self._settings_persister = settings_persister
+        self.told: list[tuple[str, bool]] = []
+
+    async def surface_stored(self, surface: str) -> None:
+        self.told.append((surface, self._settings_persister.save_settings.called))
+
+
 class TestSetLibrarySurface:
+    @pytest.fixture
+    def listener(self, service, settings_persister) -> _RecordingSurfaceListener:
+        listener = _RecordingSurfaceListener(settings_persister)
+        service._surface_listener = listener
+        return listener
+
     @pytest.mark.parametrize("surface", ["steam", "esde", "both"])
-    def test_every_surface_persists(self, service, settings, settings_persister, surface):
-        result = service.set_library_surface(surface)
+    async def test_every_surface_persists(self, service, settings, settings_persister, surface):
+        result = await service.set_library_surface(surface)
         assert result == {"success": True}
         assert settings["library_surface"] == surface
         settings_persister.save_settings.assert_called_once_with()
 
     @pytest.mark.parametrize("surface", ["ESDE", "shortcuts", "", None, True, ["esde"]])
-    def test_any_other_value_is_refused_without_writing(self, service, settings, settings_persister, surface):
+    async def test_any_other_value_is_refused_without_writing(self, service, settings, settings_persister, surface):
         with pytest.raises(Refused) as refused:
-            service.set_library_surface(surface)
+            await service.set_library_surface(surface)
         assert refused.value.reason == "invalid_library_surface"
         assert "Invalid library surface" in refused.value.message
         assert "library_surface" not in settings
         settings_persister.save_settings.assert_not_called()
 
-    def test_a_refusal_leaves_the_surface_already_stored(self, service, settings, settings_persister):
+    async def test_a_refusal_leaves_the_surface_already_stored(self, service, settings, settings_persister):
         settings["library_surface"] = "both"
         with pytest.raises(Refused):
-            service.set_library_surface("steam_only")
+            await service.set_library_surface("steam_only")
         assert settings["library_surface"] == "both"
         settings_persister.save_settings.assert_not_called()
+
+    @pytest.mark.parametrize("surface", ["steam", "esde", "both"])
+    async def test_the_listener_is_told_each_surface_once_it_is_persisted(self, service, listener, surface):
+        await service.set_library_surface(surface)
+
+        assert listener.told == [(surface, True)]
+
+    async def test_the_listener_is_told_the_same_surface_stored_again(self, service, settings, listener):
+        settings["library_surface"] = "steam"
+
+        await service.set_library_surface("steam")
+
+        assert listener.told == [("steam", True)]
+
+    async def test_a_refusal_tells_the_listener_nothing(self, service, listener):
+        with pytest.raises(Refused):
+            await service.set_library_surface("shortcuts")
+
+        assert listener.told == []
 
 
 # ── settings reset notice ─────────────────────────────────────────────

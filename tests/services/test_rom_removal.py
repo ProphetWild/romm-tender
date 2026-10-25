@@ -17,6 +17,7 @@ from _factories import (
 )
 from _spawns import record_spawns
 from fakes.fake_download_queue_cleanup import FakeDownloadQueueCleanup
+from fakes.fake_esde_stand_in_guard import FakeEsdeStandInGuard
 from fakes.fake_retrodeck_folders import FakeRetroDeckFolders
 from fakes.fake_rom_file_store import FakeRomFileStore
 from fakes.fake_unit_of_work import FakeUnitOfWork, FakeUnitOfWorkFactory
@@ -2012,3 +2013,85 @@ class TestForgetDownload:
         release.set()
         await _until(lambda: not service._removals_in_flight)
         assert uow.rom_installs.get(42) is None
+
+
+class TestAnUninstallPutsTheStandInBack:
+    """Once a game's install record is dropped by an uninstall the user asked for, its ES-DE stand-in goes back.
+
+    Each restore is asked with the record already gone, which is when a
+    restore puts anything back.
+    """
+
+    @pytest.fixture
+    def stand_ins(self, service, uow) -> tuple[FakeEsdeStandInGuard, list[bool]]:
+        guard = FakeEsdeStandInGuard()
+        installed_at_restore: list[bool] = []
+        guard.on_call = lambda name, rom_id: installed_at_restore.append(uow.rom_installs.get(rom_id) is not None)
+        service._stand_ins = guard
+        return guard, installed_at_restore
+
+    async def test_one_uninstall(self, service, uow, rom_files, stand_ins):
+        guard, installed_at_restore = stand_ins
+        _seed_installed_file(uow, rom_files, 42)
+
+        await service.remove_rom(42)
+
+        assert guard.calls == [("restore", 42)]
+        assert installed_at_restore == [False]
+
+    async def test_an_uninstall_that_failed_puts_nothing_back(self, service, uow, rom_files, stand_ins):
+        guard, _installed = stand_ins
+        rom_path = _seed_installed_file(uow, rom_files, 42)
+        rom_files.remove_file_failures.add(rom_path)
+
+        with pytest.raises(Refused):
+            await service.remove_rom(42)
+
+        assert guard.calls == []
+
+    async def test_a_sibling_superseded_by_another_version_gets_none(self, service, uow, rom_files, stand_ins):
+        guard, _installed = stand_ins
+        _seed_installed_file(uow, rom_files, 42)
+
+        await service.remove_rom_unchecked(42)
+
+        assert guard.calls == []
+
+    async def test_uninstall_all_puts_back_each_game_it_removed(self, service, uow, rom_files, stand_ins):
+        guard, installed_at_restore = stand_ins
+        _seed_installed_file(uow, rom_files, 1)
+        failing = _seed_installed_file(uow, rom_files, 2)
+        _seed_installed_file(uow, rom_files, 3)
+        rom_files.remove_file_failures.add(failing)
+
+        await service.uninstall_all_roms()
+
+        assert sorted(guard.calls) == [("restore", 1), ("restore", 3)]
+        assert installed_at_restore == [False, False]
+
+    async def test_forgetting_a_download(self, service, uow, stand_ins):
+        guard, installed_at_restore = stand_ins
+        _seed_missing_download(uow, 42)
+
+        await service.forget_download(42)
+
+        assert guard.calls == [("restore", 42)]
+        assert installed_at_restore == [False]
+
+    async def test_a_refused_forget_puts_nothing_back(self, service, uow, rom_files, stand_ins):
+        guard, _installed = stand_ins
+        rom_path = _seed_missing_download(uow, 42)
+        rom_files.files[rom_path] = b"rom"
+
+        with pytest.raises(FilePresent):
+            await service.forget_download(42)
+
+        assert guard.calls == []
+
+    def test_the_removed_game_cleanup_puts_nothing_back(self, service, uow, rom_files, stand_ins):
+        guard, _installed = stand_ins
+        _seed_installed_file(uow, rom_files, 42)
+
+        service.delete_rom_files(42)
+
+        assert guard.calls == []

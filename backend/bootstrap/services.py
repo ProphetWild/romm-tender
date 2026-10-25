@@ -157,6 +157,7 @@ class ServicesBundle:
     game_process_service: GameProcessService
     relaunch_options_resolver: RelaunchOptionsResolver
     leftover_tmp_cleanup_service: LeftoverTmpCleanupService
+    esde_stand_in_service: EsdeStandInService
 
 
 def wire_services(cfg: WiringConfig) -> ServicesBundle:
@@ -472,6 +473,9 @@ def wire_services(cfg: WiringConfig) -> ServicesBundle:
 
     # The library sync hands it each unit's representatives and its end; the
     # paths a stand-in is placed at are a download's, asked of the same seams.
+    # It skips a game being downloaded, but the download service is built after
+    # it and holds it — bound once both exist.
+    active_downloads_binding: LateBinding[set[int]] = LateBinding("active_downloads")
     esde_stand_in_service = EsdeStandInService(
         config=EsdeStandInServiceConfig(
             stand_ins=cfg.adapters.esde_stand_ins,
@@ -482,6 +486,7 @@ def wire_services(cfg: WiringConfig) -> ServicesBundle:
             romm_api=cfg.adapters.romm_api,
             uow_factory=cfg.callbacks.uow_factory,
             settings=cfg.stores.settings,
+            active_downloads=active_downloads_binding.get,
             loop=cfg.runtime.loop,
             logger=cfg.runtime.logger,
             log_debug=cfg.callbacks.log_debug,
@@ -551,6 +556,7 @@ def wire_services(cfg: WiringConfig) -> ServicesBundle:
             emit=cfg.runtime.emit,
             clock=cfg.runtime.clock,
             conflict_rules=conflict_rules,
+            stand_ins=esde_stand_in_service,
         ),
     )
 
@@ -571,8 +577,10 @@ def wire_services(cfg: WiringConfig) -> ServicesBundle:
             uow_factory=cfg.callbacks.uow_factory,
             rom_remover=rom_remover_binding.get,
             conflict_rules=conflict_rules,
+            stand_ins=esde_stand_in_service,
         ),
     )
+    active_downloads_binding.set(download_service.active_download_rom_ids)
 
     leftover_tmp_cleanup_service = LeftoverTmpCleanupService(
         config=LeftoverTmpCleanupServiceConfig(
@@ -594,6 +602,7 @@ def wire_services(cfg: WiringConfig) -> ServicesBundle:
             download_queue_cleanup=download_service,
             uow_factory=cfg.callbacks.uow_factory,
             conflict_rules=conflict_rules,
+            stand_ins=esde_stand_in_service,
         ),
     )
     # Close the download↔removal cycle: DownloadService's sibling supersede now
@@ -648,6 +657,7 @@ def wire_services(cfg: WiringConfig) -> ServicesBundle:
             path_exists=cfg.adapters.path_probe,
             retrodeck_folders=cfg.callbacks.retrodeck_folders,
             platform_systems=platform_systems,
+            stand_ins=esde_stand_in_service,
         ),
     )
 
@@ -659,6 +669,7 @@ def wire_services(cfg: WiringConfig) -> ServicesBundle:
             settings_persister=cfg.callbacks.settings_persister,
             steam_config=cfg.adapters.steam_config,
             conflict_rules=conflict_rules,
+            surface_listener=esde_stand_in_service,
         ),
     )
 
@@ -941,4 +952,5 @@ def wire_services(cfg: WiringConfig) -> ServicesBundle:
         game_process_service=game_process_service,
         relaunch_options_resolver=relaunch_options_resolver,
         leftover_tmp_cleanup_service=leftover_tmp_cleanup_service,
+        esde_stand_in_service=esde_stand_in_service,
     )

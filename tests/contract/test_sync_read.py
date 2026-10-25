@@ -480,21 +480,21 @@ async def test_set_library_surface_persists(harness):
     """set_library_surface stores the value and get_settings reports it back."""
     assert harness.endpoints.get_settings()["library_surface"] == "steam"
 
-    result = harness.endpoints.set_library_surface("esde")
+    result = await harness.endpoints.set_library_surface("esde")
     assert result == {"success": True}
     assert harness.settings["library_surface"] == "esde"
     assert harness.endpoints.get_settings()["library_surface"] == "esde"
 
-    result = harness.endpoints.set_library_surface("both")
+    result = await harness.endpoints.set_library_surface("both")
     assert result == {"success": True}
     assert harness.endpoints.get_settings()["library_surface"] == "both"
 
 
 async def test_set_library_surface_rejects_invalid(harness):
     """An unknown surface is answered with the failure shape and changes nothing."""
-    harness.endpoints.set_library_surface("esde")
+    await harness.endpoints.set_library_surface("esde")
 
-    result = harness.endpoints.set_library_surface("shortcuts")
+    result = await harness.endpoints.set_library_surface("shortcuts")
     assert result["success"] is False
     assert result["reason"] == "invalid_library_surface"
     assert isinstance(result["message"], str) and result["message"]

@@ -44,6 +44,7 @@ if TYPE_CHECKING:
         ActiveCoreReader,
         AdoptionMoveStore,
         DownloadFileStore,
+        EsdeStandInGuard,
         SaveBackupFn,
         SaveLocationReader,
         SystemM3uSupportFn,
@@ -88,6 +89,7 @@ class AdoptionRenamerConfig:
     directory candidate, which is what its saves are named after.
     ``back_up_save`` is the sanctioned save-backup funnel — an Overwrite
     destroys save files, and this component does not own a way to do that.
+    ``stand_ins`` names ES-DE's stand-ins; ``None`` where nothing places any.
     """
 
     adoption_move: AdoptionMoveStore
@@ -97,6 +99,7 @@ class AdoptionRenamerConfig:
     save_locations: SaveLocationReader
     active_core: ActiveCoreReader
     logger: logging.Logger
+    stand_ins: EsdeStandInGuard | None = None
 
 
 class AdoptionRenamer:
@@ -110,10 +113,21 @@ class AdoptionRenamer:
         self._save_locations = config.save_locations
         self._active_core = config.active_core
         self._logger = config.logger
+        self._stand_ins = config.stand_ins
 
-    def target_taken(self, target: Target) -> bool:
-        """Whether something now occupies the ROM's own canonical path."""
-        return self._adoption_move.exists(target.path)
+    def target_taken(self, target: Target, *, stand_in_of: int | None = None) -> bool:
+        """Whether something now occupies the ROM's own canonical path.
+
+        *stand_in_of* names the game whose own ES-DE stand-in there does not
+        count, because it is removed before anything moves; anybody else's link
+        counts like any other content.
+        """
+        if not self._adoption_move.exists(target.path):
+            return False
+        stand_ins = self._stand_ins
+        if stand_in_of is None or stand_ins is None:
+            return True
+        return stand_ins.do_stand_in_at(target.path) != stand_in_of
 
     def carry_to_canonical(
         self, rom_id: int, target: Target, source_path: str, collision_choice

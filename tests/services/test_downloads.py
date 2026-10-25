@@ -21,6 +21,7 @@ from _factories import (
 from _spawns import record_spawns
 from fakes.fake_core_info_provider import FakeCoreInfoProvider, FakeSandboxLauncher
 from fakes.fake_disc_resolver import FakeDiscResolver
+from fakes.fake_esde_stand_in_guard import FakeEsdeStandInGuard
 from fakes.fake_platform_core_reader import FakePlatformCoreReader
 from fakes.fake_platform_systems import RETRODECK_SOURCE, FakePlatformSystems
 from fakes.fake_retrodeck_folders import FakeRetroDeckFolders
@@ -7447,3 +7448,176 @@ class TestTheM3uOverTheNewDiscFormats:
         downloads.service._unpacker().generate_m3u(str(tmp_path), {"fs_name_no_ext": "Game"}, False)
 
         assert not (tmp_path / "Game.m3u").exists()
+
+
+def _stand_in_detail(**extra: Any) -> dict[str, Any]:
+    return {
+        "id": 42,
+        "name": "Zelda",
+        "fs_name": "zelda.z64",
+        "fs_size_bytes": 4,
+        "platform_slug": "n64",
+        "platform_name": "Nintendo 64",
+        **extra,
+    }
+
+
+def _write_rom(_rom_id, _filename, dest, _progress_callback=None, *, resume=False, on_meta=None):
+    with open(dest, "wb") as f:
+        f.write(b"ROM!")
+
+
+class TestTheGamesStandIn:
+    """A download clears its game's ES-DE stand-in before the target is judged, and puts it back where it lands nothing.
+
+    The stand-in is put back only once the download's claim is given back,
+    because a restore declines a game whose download is in progress.
+    """
+
+    @staticmethod
+    def _wire(downloads, transfer=_write_rom, **detail: Any) -> tuple[FakeEsdeStandInGuard, str, list[bool]]:
+        """ROM 42 served and transferred by *transfer*; answers the guard, the target, and the claim at each restore."""
+        guard = FakeEsdeStandInGuard()
+        claimed_at_restore: list[bool] = []
+        guard.on_call = lambda name, rom_id: (
+            claimed_at_restore.append(rom_id in downloads.service.active_download_rom_ids())
+            if name == "restore"
+            else None
+        )
+        downloads.service._stand_ins = guard
+        _seed_rom(downloads.uow, 42)
+        downloads.romm_api.get_rom.return_value = _stand_in_detail(**detail)
+        downloads.romm_api.download_rom_content.side_effect = transfer
+        target = os.path.join(downloads.service._retrodeck_folders.roms, "n64", "zelda.z64")
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        return guard, target, claimed_at_restore
+
+    @staticmethod
+    async def _start(downloads, **kwargs: Any) -> Any:
+        """Start ROM 42's download and wait for the transfer it started to end."""
+        result = await downloads.service.start_download(42, **kwargs)
+        task = downloads.service.task_for_rom(42)
+        if task is not None:
+            await asyncio.gather(task, return_exceptions=True)
+        return result
+
+    async def test_the_stand_in_at_the_target_is_cleared_and_the_download_lands_there(self, downloads, tmp_path):
+        guard, target, _claimed = self._wire(downloads)
+        (tmp_path / "stub").write_bytes(b"")
+        os.symlink(tmp_path / "stub", target)
+        guard.stand_ins[target] = 42
+
+        result = await self._start(downloads)
+
+        assert result == {"success": True, "message": "Download started"}
+        assert not os.path.islink(target)
+        assert Path(target).read_bytes() == b"ROM!"
+        assert downloads.uow.rom_installs.get(42) is not None
+        assert guard.calls == [("clear", 42)]
+
+    async def test_the_stand_in_is_cleared_before_the_gate_judges_the_target(self, downloads):
+        guard, _target, _claimed = self._wire(downloads)
+        order: list[str] = []
+        guard.on_call = lambda name, rom_id: order.append(name)
+        gate = downloads.service._target_gate
+
+        async def recording_gate(*args, **kwargs):
+            order.append("gate")
+            return await gate(*args, **kwargs)
+
+        downloads.service._target_gate = recording_gate
+
+        await self._start(downloads)
+
+        assert order == ["clear", "gate"]
+
+    async def test_a_start_the_gate_answers_with_a_question_puts_it_back_once_unclaimed(self, downloads):
+        guard, target, claimed = self._wire(downloads)
+        Path(target).write_bytes(b"the user's own copy")
+
+        with pytest.raises(TargetOccupied):
+            await self._start(downloads)
+
+        assert guard.calls == [("clear", 42), ("restore", 42)]
+        assert claimed == [False]
+        assert Path(target).read_bytes() == b"the user's own copy"
+
+    async def test_a_refused_start_puts_it_back(self, downloads):
+        guard, _target, claimed = self._wire(downloads)
+        downloads.service._download_file_store.disk_free = lambda _path: 0
+
+        with pytest.raises(Refused) as refused:
+            await self._start(downloads)
+
+        assert refused.value.reason == "insufficient_space"
+        assert guard.calls == [("clear", 42), ("restore", 42)]
+        assert claimed == [False]
+
+    async def test_a_start_that_cleared_no_stand_in_puts_none_back(self, downloads):
+        guard, _target, _claimed = self._wire(downloads, has_file_on_disk=False)
+        guard.clear_answer = False
+
+        with pytest.raises(NoFileOnRomm):
+            await self._start(downloads)
+
+        assert guard.calls == [("clear", 42)]
+
+    async def test_a_failed_download_puts_it_back_once_unclaimed(self, downloads):
+        def drop(*_args, **_kwargs):
+            raise OSError("simulated network drop")
+
+        guard, target, claimed = self._wire(downloads, transfer=drop)
+
+        await self._start(downloads)
+
+        assert downloads.service._download_queue[42]["status"] == "failed"
+        assert guard.calls == [("clear", 42), ("restore", 42)]
+        assert claimed == [False]
+        assert not os.path.lexists(target)
+
+    async def test_a_cancelled_download_puts_it_back_once_unclaimed(self, downloads):
+        def cancelled(*_args, **_kwargs):
+            downloads.service._control_tokens[42].cancelled = True
+            raise asyncio.CancelledError()
+
+        guard, _target, claimed = self._wire(downloads, transfer=cancelled)
+
+        await self._start(downloads)
+
+        assert 42 not in downloads.service._download_queue
+        assert guard.calls == [("clear", 42), ("restore", 42)]
+        assert claimed == [False]
+
+    async def test_a_paused_download_keeps_no_stand_in_until_it_is_cancelled(self, downloads):
+        def paused(_rom_id, _filename, dest, *_args, **_kwargs):
+            Path(dest).write_bytes(b"RO")
+            downloads.service._control_tokens[42].paused = True
+            raise asyncio.CancelledError()
+
+        guard, _target, _claimed = self._wire(downloads, transfer=paused)
+
+        await self._start(downloads)
+
+        assert downloads.service._download_queue[42]["status"] == "paused"
+        assert guard.calls == [("clear", 42)]
+
+        downloads.service.cancel_download(42)
+        await asyncio.gather(*(task for task in asyncio.all_tasks() if task is not asyncio.current_task()))
+
+        assert guard.calls == [("clear", 42), ("restore", 42)]
+
+    async def test_a_resume_refused_by_what_appeared_puts_back_only_what_it_cleared(self, downloads):
+        def paused(_rom_id, _filename, dest, *_args, **_kwargs):
+            Path(dest).write_bytes(b"RO")
+            downloads.service._control_tokens[42].paused = True
+            raise asyncio.CancelledError()
+
+        guard, target, _claimed = self._wire(downloads, transfer=paused)
+        await self._start(downloads)
+        Path(target).write_bytes(b"appeared while paused")
+        guard.clear_answer = False
+
+        with pytest.raises(TargetOccupied):
+            await downloads.service.resume_download(42)
+
+        assert guard.calls == [("clear", 42), ("clear", 42)]

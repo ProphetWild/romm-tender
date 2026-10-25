@@ -73,6 +73,7 @@ if TYPE_CHECKING:
         ConflictRules,
         DebugLogger,
         DownloadFileStore,
+        EsdeStandInGuard,
         EventEmitter,
         PlatformSystems,
         RetroDeckFolders,
@@ -133,7 +134,9 @@ class RomAdoptionServiceConfig:
     search's — they are taken here and handed straight on, so the service has one
     constructor rather than three the composition root has to keep in step.
     ``conflict_rules`` are what an adoption checks at its entry and takes its
-    lease through.
+    lease through. ``stand_ins`` are ES-DE's, which the search and the rename
+    see past and an adoption clears its canonical name of; ``None`` where
+    nothing places any.
     """
 
     romm_api: RommRomReader
@@ -158,6 +161,7 @@ class RomAdoptionServiceConfig:
     emit: EventEmitter
     clock: Clock
     conflict_rules: ConflictRules
+    stand_ins: EsdeStandInGuard | None = None
 
 
 class RomAdoptionService:
@@ -185,6 +189,7 @@ class RomAdoptionService:
                 save_locations=config.save_locations,
                 active_core=config.active_core,
                 logger=config.logger,
+                stand_ins=config.stand_ins,
             )
         )
         self._search = CandidateSearch(
@@ -197,9 +202,11 @@ class RomAdoptionService:
                 uow_factory=config.uow_factory,
                 logger=config.logger,
                 log_debug=config.log_debug,
+                stand_ins=config.stand_ins,
             )
         )
         self._sibling_supersede = config.sibling_supersede
+        self._stand_ins = config.stand_ins
         self._uow_factory = config.uow_factory
         self._loop = config.loop
         self._logger = config.logger
@@ -565,6 +572,10 @@ class RomAdoptionService:
         (the supersede is told the target as ``adopted_path``). Should the record
         then be refused, neither version is installed — but the hand-over never
         touched the file, so whatever is still there can be adopted again.
+
+        The game's own ES-DE stand-in at the canonical name is removed once the
+        validation has passed and before the carry, and put back by an adoption
+        that records nothing.
         """
         rom_id = int(rom_id)
         rom_detail, target = await self._loop.run_in_executor(None, self._detail_and_target_io, rom_id, candidate_path)
@@ -574,15 +585,23 @@ class RomAdoptionService:
         if source_path is None:
             raise Refused("invalid_candidate", "That file is not in this game's platform folder — nothing was adopted")
         await self._loop.run_in_executor(None, self._validate_adoption_io, rom_id, target, source_path)
-        if source_path != target.path:
-            worker = partial(self._carry_io, rom_id, target, source_path, collision_choice)
-            stopped = await self._loop.run_in_executor(None, worker)
-            if stopped is not None:
-                return stopped
-        # Not caught: a refused removal stops the adoption before anything is
-        # recorded, as it stops a download.
-        await self._sibling_supersede()(rom_id, adopted_path=target.path)
-        return await self._loop.run_in_executor(None, self._adopt_io, rom_id, rom_detail, target)
+        cleared = recorded = False
+        try:
+            if source_path != target.path:
+                cleared = self._stand_ins is not None and await self._stand_ins.clear_for_download(rom_id)
+                worker = partial(self._carry_io, rom_id, target, source_path, collision_choice)
+                stopped = await self._loop.run_in_executor(None, worker)
+                if stopped is not None:
+                    return stopped
+            # Not caught: a refused removal stops the adoption before anything is
+            # recorded, as it stops a download.
+            await self._sibling_supersede()(rom_id, adopted_path=target.path)
+            adopted = await self._loop.run_in_executor(None, self._adopt_io, rom_id, rom_detail, target)
+            recorded = True
+            return adopted
+        finally:
+            if cleared and not recorded and self._stand_ins is not None:
+                await self._stand_ins.restore(rom_id)
 
     def _resolve_source(self, target: _Target, candidate_path) -> str | None:
         """Where the content to adopt sits now: the target path, or a vetted candidate.
@@ -614,7 +633,7 @@ class RomAdoptionService:
         # user's confirmation, and this service re-validates every path
         # immediately before it uses it.
         self._refuse_unadoptable(source_path, target)
-        if source_path != target.path and self._renamer.target_taken(target):
+        if source_path != target.path and self._renamer.target_taken(target, stand_in_of=rom_id):
             raise Refused("target_taken", _TARGET_TAKEN_MESSAGE)
         with self._uow_factory() as uow:
             known = uow.roms.get(rom_id) is not None

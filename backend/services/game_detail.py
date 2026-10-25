@@ -37,6 +37,7 @@ if TYPE_CHECKING:
         AdoptionCandidateProbeFn,
         BiosChecker,
         Clock,
+        EsdeStandInGuard,
         PathExistsReader,
         PlatformSystems,
         RetroDeckFolders,
@@ -71,7 +72,8 @@ class GameDetailServiceConfig:
     same game is in the folder under another name. For an installed ROM
     ``path_exists`` instead answers whether the recorded file or folder is still
     there. All are bounded and network-free, which is the whole constraint on
-    this page.
+    this page. ``stand_ins`` names ES-DE's stand-ins, Tender's own links, which
+    neither probe reads as the game's file; ``None`` where nothing places any.
     """
 
     settings: dict[str, Any]
@@ -86,6 +88,7 @@ class GameDetailServiceConfig:
     retrodeck_folders: RetroDeckFolders
     platform_systems: PlatformSystems
     candidate_probe: AdoptionCandidateProbeFn
+    stand_ins: EsdeStandInGuard | None = None
 
 
 class GameDetailService:
@@ -104,6 +107,7 @@ class GameDetailService:
         self._retrodeck_folders = config.retrodeck_folders
         self._platform_systems = config.platform_systems
         self._candidate_probe = config.candidate_probe
+        self._stand_ins = config.stand_ins
 
     @staticmethod
     def _resolve_rom_file(install: RomInstall | None, rom: Rom) -> str:
@@ -352,13 +356,14 @@ class GameDetailService:
         """The path an install record names when neither its file nor its folder exists, else ``None``.
 
         A folder-backed download is named by its folder, a single-file one by
-        its file. ``None`` too for a ROM with no install record.
+        its file. An ES-DE stand-in there is not the game's file, so it counts
+        as gone. ``None`` too for a ROM with no install record.
         """
         if install is None:
             return None
         file_path = install.file_path
         rom_dir = install.rom_dir
-        if (file_path and self._path_exists.exists(file_path)) or (rom_dir and self._path_exists.exists(rom_dir)):
+        if (file_path and self._holds_content(file_path)) or (rom_dir and self._holds_content(rom_dir)):
             return None
         return rom_dir or file_path
 
@@ -377,7 +382,8 @@ class GameDetailService:
         the computed path simply misses and this stays false. That degradation is
         intended: it goes quiet rather than claiming something it cannot know,
         and so does a page where RetroDECK names no folder a download could land
-        in, or no system for the platform.
+        in, or no system for the platform. An ES-DE stand-in there, this game's
+        or a sibling's, is Tender's own link and never reported.
         """
         if not rom.fs_name or not rom.platform_slug:
             return False
@@ -387,11 +393,22 @@ class GameDetailService:
         folder = self._retrodeck_folders.download_folder(platform.taken)
         if isinstance(folder, FolderRefused):
             return False
+        # Asked of the path as joined: ``safe_join`` answers where a link
+        # resolves, which for a stand-in is its stub.
+        if self._is_stand_in(os.path.join(folder, rom.fs_name)):
+            return False
         try:
             target = safe_join(folder, rom.fs_name)
         except PathTraversalError:
             return False
         return self._path_exists.exists(target)
+
+    def _holds_content(self, path: str) -> bool:
+        """Whether *path* exists and is no ES-DE stand-in, nor lies directly inside one."""
+        return self._path_exists.exists(path) and not self._is_stand_in(path)
+
+    def _is_stand_in(self, path: str) -> bool:
+        return self._stand_ins is not None and self._stand_ins.do_stand_in_at(path) is not None
 
     async def get_bios_status(self, rom_id) -> dict[str, Any]:
         """Return BIOS status for a ROM by looking up platform/rom_file from SQLite.

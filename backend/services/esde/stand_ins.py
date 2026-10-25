@@ -14,6 +14,11 @@ ROM is never asked about again. A run removes nothing before it ends, and only
 if it was not cancelled; then every stand-in of a game it no longer syncs goes,
 and nothing that is not a stand-in ever does.
 
+A game whose download is in flight or queued gets no stand-in placed or put
+back until the download ends. Which games those are is read under the lock a
+download's clearing of its path takes, after the download has claimed the game,
+so a stand-in never lands at a path a download has cleared.
+
 Every file read and write, every RomM request and every database read runs off
 the event loop, and none inside an open Unit of Work. The record is changed
 under one lock, so a sync's pass and a single game's question never interleave
@@ -48,6 +53,7 @@ if TYPE_CHECKING:
     from domain.library_surface import LibrarySurface
     from domain.work_unit import WorkUnit
     from services.protocols import (
+        ActiveDownloadRomIdsFn,
         DebugLogger,
         EsdeStandInIndexStore,
         EsdeStandInStore,
@@ -69,7 +75,8 @@ class EsdeStandInServiceConfig:
     answer a download's; ``romm_api`` answers the ROM detail a shape the listing
     cannot settle is predicted from; ``uow_factory`` reads which games are
     installed. ``settings`` is the live dict a single game's question reads the
-    library surface from.
+    library surface from. ``active_downloads`` answers the games whose download
+    is in flight or queued.
     """
 
     stand_ins: EsdeStandInStore
@@ -80,6 +87,7 @@ class EsdeStandInServiceConfig:
     romm_api: RommRomReader
     uow_factory: UnitOfWorkFactory
     settings: dict[str, Any]
+    active_downloads: ActiveDownloadRomIdsFn
     loop: asyncio.AbstractEventLoop
     logger: logging.Logger
     log_debug: DebugLogger
@@ -116,7 +124,9 @@ class _Decision:
 class EsdeStandInService:
     """Places and removes ES-DE's stand-ins for the library sync, and answers for one game.
 
-    Implements the ``EsdeStandInPass`` Protocol the sync holds.
+    Implements the ``EsdeStandInPass`` Protocol the sync holds, the
+    ``EsdeStandInGuard`` downloads, uninstalls, adoption and the game page hold,
+    and the ``LibrarySurfaceListener`` the settings tell.
     """
 
     def __init__(self, *, config: EsdeStandInServiceConfig) -> None:
@@ -128,6 +138,7 @@ class EsdeStandInService:
         self._romm_api = config.romm_api
         self._uow_factory = config.uow_factory
         self._settings = config.settings
+        self._active_downloads = config.active_downloads
         self._loop = config.loop
         self._logger = config.logger
         self._log_debug = config.log_debug
@@ -153,7 +164,9 @@ class EsdeStandInService:
         *skipped* says the sync skipped *unit* as unchanged since its last
         apply, so *roms* are only those it bound to shortcuts, and every game
         recorded on its platform, or among its members, stays. A placement that
-        fails is logged and the rest go ahead.
+        fails is logged and the rest go ahead. A game being downloaded has its
+        stand-in recorded and not placed, and a run that ended or was abandoned
+        while this unit was decided places nothing.
         """
         run = self._run
         if not writes_esde(run.surface):
@@ -173,7 +186,10 @@ class EsdeStandInService:
         pending = [rom for rom in wanted if int(rom["id"]) not in installed]
         decisions = await self._loop.run_in_executor(None, self._decide_io, pending, recorded)
         async with self._lock:
-            folders = await self._loop.run_in_executor(None, self._place_io, decisions)
+            if run is not self._run:
+                return
+            downloading = self._active_downloads()
+            folders = await self._loop.run_in_executor(None, self._place_io, decisions, downloading)
         if not skipped:
             run.swept_folders.update(folders)
 
@@ -195,7 +211,15 @@ class EsdeStandInService:
 
     async def is_stand_in(self, path: str) -> bool:
         """Whether *path* is a stand-in, or lies directly inside a stand-in that is a folder."""
-        return await self._loop.run_in_executor(None, self._is_stand_in_io, path)
+        return await self._loop.run_in_executor(None, self.do_stand_in_at, path) is not None
+
+    def do_stand_in_at(self, path: str) -> int | None:
+        """The game a stand-in at *path*, or one *path* lies directly inside, stands in for; else ``None``.
+
+        Reads the link and never follows it; blocking, for a caller already off the loop.
+        """
+        game = self._stand_ins.stand_in_at(path)
+        return game if game is not None else self._stand_ins.stand_in_at(os.path.dirname(path))
 
     async def stand_in_for(self, rom_id: int) -> StandInRecord | None:
         """The stand-in recorded for *rom_id* — where it goes, whether or not it is there now — or ``None``."""
@@ -215,16 +239,30 @@ class EsdeStandInService:
         """Put *rom_id*'s recorded stand-in back once no download holds it; whether it stands there now.
 
         Puts nothing back while the library surface writes no ES-DE, while the
-        game has an install record, where nothing is recorded, or where
-        something else now holds the path. A failure is logged and answers
-        ``False``.
+        game has an install record or a download in flight or queued, where
+        nothing is recorded, or where something else now holds the path. A
+        failure is logged and answers ``False``.
         """
-        if not writes_esde(library_surface(self._settings.get("library_surface"))):
-            return False
-        if rom_id in await self._loop.run_in_executor(None, self._installed_rom_ids_io):
-            return False
         async with self._lock:
+            if not writes_esde(library_surface(self._settings.get("library_surface"))):
+                return False
+            if rom_id in self._active_downloads():
+                return False
+            if rom_id in await self._loop.run_in_executor(None, self._installed_rom_ids_io):
+                return False
             return await self._loop.run_in_executor(None, self._restore_io, rom_id)
+
+    async def surface_stored(self, surface: LibrarySurface) -> None:
+        """Once the library surface stored is *surface* and writes no ES-DE, remove every stand-in.
+
+        The run under way, if any, places nothing more: its surface was the one
+        it started with, and a stand-in it placed now would outlive the switch.
+        """
+        if writes_esde(surface):
+            return
+        self._run = _Run()
+        removed = await self.remove_all()
+        self._log_debug(f"[esde] leaving ES-DE removed {removed} stand-ins")
 
     async def remove_all(self) -> int:
         """Remove every stand-in Tender placed and empty the record, for a surface that stops writing ES-DE.
@@ -300,8 +338,8 @@ class EsdeStandInService:
                 shape = None
         return StandInRecord(platform_slug=slug, system=system, updated_at=updated_at, path=path, shape=shape)
 
-    def _place_io(self, decisions: list[_Decision]) -> set[str]:
-        """Record *decisions* and place each stand-in they name; answer every folder one was placed into or left."""
+    def _place_io(self, decisions: list[_Decision], downloading: Collection[int]) -> set[str]:
+        """Record *decisions* and place each stand-in they name but one *downloading*; answer every folder they name."""
         index = self._index.read()
         folders: set[str] = set()
         for decision in decisions:
@@ -313,6 +351,8 @@ class EsdeStandInService:
             if path is None or shape is None:
                 continue
             folders.add(os.path.dirname(path))
+            if decision.rom_id in downloading:
+                continue
             try:
                 outcome = self._stand_ins.place(decision.rom_id, shape, path)
             except (OSError, ValueError) as e:
@@ -343,12 +383,6 @@ class EsdeStandInService:
             self._remove_stub_io(rom_id)
         self._write_io(kept)
         return removed
-
-    def _is_stand_in_io(self, path: str) -> bool:
-        return (
-            self._stand_ins.stand_in_at(path) is not None
-            or self._stand_ins.stand_in_at(os.path.dirname(path)) is not None
-        )
 
     def _clear_io(self, rom_id: int) -> bool:
         record = self._index.read().get(rom_id)
