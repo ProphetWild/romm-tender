@@ -143,6 +143,7 @@ _ARGS: dict[str, tuple[Any, ...]] = {
     "set_all_platforms_sync": (True,),
     "set_artwork_slot_automatic": (41, "logo"),
     "set_game_core": (41, "core"),
+    "set_library_surface": ("esde",),
     "set_system_core": ("n64", ""),
     "sign_out": (),
     "start_download": (41, False, None, None, False),
@@ -285,6 +286,7 @@ SYNC_ACTIVE = (
     "get_prune_preview",
     "remove_all_shortcuts",
     "remove_platform_shortcuts",
+    "set_library_surface",
     "start_prune",
     "uninstall_all_roms",
 )

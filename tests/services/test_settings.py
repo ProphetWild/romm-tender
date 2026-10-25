@@ -1210,6 +1210,32 @@ class TestSetLibrarySurface:
 
         assert listener.told == []
 
+    @pytest.mark.parametrize("surface", ["steam", "esde", "both"])
+    async def test_a_library_sync_in_flight_refuses_the_switch_and_changes_nothing(
+        self, service, settings, settings_persister, listener, surface
+    ):
+        settings["library_surface"] = "steam" if surface != "steam" else "esde"
+        before = dict(settings)
+        revoker = _RecordingSkipRevoker(settings_persister)
+        service._skip_revoker = revoker
+        service._rules = _make_conflict_rules(sync_in_flight=True)
+
+        with _refused_by_conflict_rule("sync_active"):
+            await service.set_library_surface(surface)
+
+        assert settings == before
+        settings_persister.save_settings.assert_not_called()
+        assert revoker.revoked == []
+        assert listener.told == []
+
+    async def test_the_sync_rule_answers_before_the_value_is_judged(self, service, settings_persister):
+        service._rules = _make_conflict_rules(sync_in_flight=True)
+
+        with _refused_by_conflict_rule("sync_active"):
+            await service.set_library_surface("shortcuts")
+
+        settings_persister.save_settings.assert_not_called()
+
 
 class _RecordingSkipRevoker:
     """Records each revocation, with whether the surface was persisted by then."""

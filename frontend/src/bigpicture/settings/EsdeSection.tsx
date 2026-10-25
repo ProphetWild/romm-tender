@@ -60,6 +60,8 @@ const NOT_WRITING = "Tender writes them while the library surface is ES-DE or Bo
 interface EsdeSectionProps {
   surface: LibrarySurface;
   onSurfaceChange: (surface: LibrarySurface) => void;
+  /** Why the last change was not stored — a library sync running among the reasons — or `""`. */
+  surfaceRefusal: string;
   /** The status read: `undefined` until it answers, `null` where it failed. */
   status: EsdeStatus | null | undefined;
   /** What the shortcut removal is doing or did, or `""`. */
@@ -113,7 +115,14 @@ const StatusRows: FC<{ status: EsdeStatus }> = ({ status }) => {
   );
 };
 
-export const EsdeSection: FC<EsdeSectionProps> = ({ surface, onSurfaceChange, status, removal, removing }) => (
+export const EsdeSection: FC<EsdeSectionProps> = ({
+  surface,
+  onSurfaceChange,
+  surfaceRefusal,
+  status,
+  removal,
+  removing,
+}) => (
   <PanelSection title="ES-DE">
     <PanelSectionRow>
       <DropdownItem
@@ -125,6 +134,11 @@ export const EsdeSection: FC<EsdeSectionProps> = ({ surface, onSurfaceChange, st
         onChange={(option) => onSurfaceChange(option.data as LibrarySurface)}
       />
     </PanelSectionRow>
+    {surfaceRefusal && (
+      <PanelSectionRow>
+        <Field label={surfaceRefusal} focusable={true} />
+      </PanelSectionRow>
+    )}
     {removal && (
       <PanelSectionRow>
         <Field label={removal} focusable={true} />

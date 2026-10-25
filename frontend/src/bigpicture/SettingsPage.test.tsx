@@ -2145,6 +2145,31 @@ describe("SettingsPage", () => {
       expect(confirmOffered()).toBe(false);
     });
 
+    it("words a switch refused while a library sync runs, and a later accepted one clears it", async () => {
+      const message = "A library sync is in progress — wait for it to finish or cancel it first.";
+      vi.mocked(backend.setLibrarySurface).mockResolvedValueOnce({ success: false, reason: "sync_active", message });
+      renderPage();
+      await flushAsync();
+      expect(lastEsde().surfaceRefusal).toBe("");
+
+      await change("esde");
+      expect(lastEsde().surface).toBe("steam");
+      expect(lastEsde().surfaceRefusal).toBe(message);
+      expect(confirmOffered()).toBe(false);
+
+      await change("both");
+      expect(lastEsde().surface).toBe("both");
+      expect(lastEsde().surfaceRefusal).toBe("");
+    });
+
+    it("words a refusal that carries no message", async () => {
+      vi.mocked(backend.setLibrarySurface).mockResolvedValue({ success: false, reason: "sync_active" });
+      renderPage();
+      await flushAsync();
+      await change("esde");
+      expect(lastEsde().surfaceRefusal).toBe("The library surface could not be saved.");
+    });
+
     it("puts the surface back and logs when the save rejects", async () => {
       const logSpy = vi.spyOn(backend, "logError");
       vi.mocked(backend.setLibrarySurface).mockRejectedValue(new Error("boom"));
@@ -2153,6 +2178,7 @@ describe("SettingsPage", () => {
       await change("esde");
       expect(lastEsde().surface).toBe("steam");
       expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("Failed to save the library surface"));
+      expect(lastEsde().surfaceRefusal).toBe("The library surface could not be saved.");
       expect(confirmOffered()).toBe(false);
     });
 

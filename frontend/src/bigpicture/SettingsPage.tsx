@@ -770,6 +770,7 @@ export const SettingsPage: FC<SettingsPageProps> = ({ onBack, section }) => {
           <EsdeSection
             surface={esde.surface}
             onSurfaceChange={esde.changeSurface}
+            surfaceRefusal={esde.surfaceRefusal}
             status={esde.status}
             removal={esde.removal}
             removing={esde.removing}

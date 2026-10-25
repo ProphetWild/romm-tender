@@ -59,7 +59,15 @@ function status(overrides: Partial<EsdeStatus> = {}): EsdeStatus {
 
 function renderSection(props: Partial<Parameters<typeof EsdeSection>[0]> = {}) {
   return render(
-    <EsdeSection surface="esde" onSurfaceChange={vi.fn()} status={status()} removal="" removing={false} {...props} />,
+    <EsdeSection
+      surface="esde"
+      onSurfaceChange={vi.fn()}
+      surfaceRefusal=""
+      status={status()}
+      removal=""
+      removing={false}
+      {...props}
+    />,
   );
 }
 
@@ -98,6 +106,19 @@ describe("EsdeSection", () => {
       lastDropdown().onChange!({ data: "esde", label: "ES-DE" });
 
       expect(onSurfaceChange).toHaveBeenCalledWith("esde");
+    });
+
+    it("says why a switch was refused, as a stop Steam can focus", () => {
+      const message = "A library sync is in progress — wait for it to finish or cancel it first.";
+      renderSection({ surfaceRefusal: message });
+
+      expect(field(message)).toHaveAttribute("tabindex", "0");
+    });
+
+    it("says nothing of a refusal where there was none", () => {
+      renderSection();
+
+      expect(screen.queryByText(/could not be saved|in progress/)).toBeNull();
     });
 
     it("is dead while the shortcuts are being removed", () => {
@@ -209,7 +230,7 @@ describe("EsdeSection", () => {
   });
 
   it("makes every row a stop Steam can focus", () => {
-    renderSection({ removal: "Removed 10 shortcuts" });
+    renderSection({ removal: "Removed 10 shortcuts", surfaceRefusal: "The library surface could not be saved." });
 
     for (const row of screen.getAllByTestId("row")) {
       expect(row.querySelector('[tabindex="0"]')).not.toBeNull();

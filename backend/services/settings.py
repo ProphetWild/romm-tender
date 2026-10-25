@@ -463,7 +463,16 @@ class SettingsService:
         not, since a platform the next sync skipped would hand the ES-DE pass
         none of RomM's fields; then each surface listener is told the surface
         stored, the same one again included.
+
+        Refused with ``sync_active`` while a library sync is in flight: the
+        platforms that run finishes after the revocation would take fresh
+        stamps, so the switch's refetch would be lost, and the listeners'
+        removals would race the run's own ES-DE pass.
         """
+        async with self._rules.hold("set_library_surface", sync=True):
+            return await self._set_library_surface(surface)
+
+    async def _set_library_surface(self, surface: object) -> dict[str, Any]:
         if surface not in LIBRARY_SURFACES:
             raise Refused("invalid_library_surface", f"Invalid library surface: {surface}")
         previous = library_surface(self._settings.get("library_surface"))

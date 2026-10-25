@@ -16,12 +16,16 @@ import { removeEveryTenderShortcut, type AllShortcutsRemoval } from "../../utils
 // Process-local: a key in `pruneLease`'s own map, unique among the pages that hold leases.
 const ESDE_SETTINGS_LEASE_OWNER = "settings-esde";
 
+const NOT_SAVED = "The library surface could not be saved.";
+
 export interface EsdeSettings {
   surface: LibrarySurface;
   /** The surface the settings read answered. The same function on every
    *  render, so an effect may name it without running again. */
   loadSurface: (surface: LibrarySurface) => void;
   changeSurface: (surface: LibrarySurface) => void;
+  /** Why the last change was not stored, or `""`. */
+  surfaceRefusal: string;
   /** `undefined` until the read answers, `null` where it failed. */
   status: EsdeStatus | null | undefined;
   removal: string;
@@ -41,6 +45,7 @@ function removalLine(outcome: Exclude<AllShortcutsRemoval, { kind: "cancelled" }
 
 export function useEsdeSettings(open: boolean): EsdeSettings {
   const [surface, setSurface] = useState<LibrarySurface>("steam");
+  const [surfaceRefusal, setSurfaceRefusal] = useState("");
   const [status, setStatus] = useState<EsdeStatus | null | undefined>(undefined);
   const [removal, setRemoval] = useState("");
   const [removing, setRemoving] = useState(false);
@@ -95,17 +100,20 @@ export function useEsdeSettings(open: boolean): EsdeSettings {
     const previous = surface;
     if (next === previous || removing) return;
     setSurface(next);
+    setSurfaceRefusal("");
     detach(
       (async () => {
         try {
           const result = await setLibrarySurface(next);
           if (!result.success) {
             setSurface(previous);
+            setSurfaceRefusal(result.message ?? NOT_SAVED);
             return;
           }
         } catch (e) {
           logError(`Failed to save the library surface: ${e}`);
           setSurface(previous);
+          setSurfaceRefusal(NOT_SAVED);
           return;
         }
         // The scripts follow the surface stored, so what the rows say has moved.
@@ -115,5 +123,5 @@ export function useEsdeSettings(open: boolean): EsdeSettings {
     );
   };
 
-  return { surface, loadSurface: setSurface, changeSurface, status, removal, removing };
+  return { surface, loadSurface: setSurface, changeSurface, surfaceRefusal, status, removal, removing };
 }
