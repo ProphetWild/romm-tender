@@ -47,6 +47,7 @@ _REASON_PHRASES = {
     421: "Misdirected Request",
     426: "Upgrade Required",
     500: "Internal Server Error",
+    503: "Service Unavailable",
 }
 
 

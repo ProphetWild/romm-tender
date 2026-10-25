@@ -6,21 +6,23 @@ order below is the whole point of this module::
     take the lock (retrying briefly)
       -> schema migration and the start-up routines
       -> bind the port (preferred, then falling back)
-      -> write the port file
+      -> write the port file, then ES-DE's hook files
       -> start loading the panel into Steam
 
 Because the port is bound only after the schema and the start-up routines are
-through, **"the port file is there" simply means "the backend is ready"**. A
-process that dies at the schema migration has never announced a port, so nothing
-has to wait for a readiness signal and no call has to be held pending one. The
-draft's waiting mechanism — listen at once, queue calls until a ready flag —
-disappears with it.
+through, **"the port file is there" simply means "the backend is ready"**, and
+so does finding ES-DE's hook files, which are written beside it and taken away
+with it. A process that dies at the schema migration has never announced a
+port, so nothing has to wait for a readiness signal and no call has to be held
+pending one. The draft's waiting mechanism — listen at once, queue calls until a
+ready flag — disappears with it.
 
 **What is fatal and what is not are not the same question.** Without the lock,
 the schema, the wiring or a port there is no backend, so those end the process.
 The start-up routines are repairs, so each runs inside the build through the
 reporting wrapper in ``bootstrap/startup.py`` (which says why), and a failure is
-counted rather than fatal.
+counted rather than fatal. Hook files that cannot be written cost ES-DE's hooks
+and nothing else, so that failure is logged and the backend runs on.
 """
 
 from __future__ import annotations
@@ -31,6 +33,7 @@ import signal
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from host.hooks import HookFiles
 from host.inject import PanelInjector
 from host.inject.machine import ensure_debugger_marker, terminate_steam_webhelper
 from host.inject.watchdog import INJECT_OFF
@@ -39,10 +42,11 @@ from host.single_instance import PortFile, SingleInstanceLock, someone_listening
 
 if TYPE_CHECKING:
     import logging
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Awaitable, Callable, Mapping
 
     from host.dispatch import CallDispatcher
     from host.events import EventSink
+    from host.hooks import HookFn
     from host.inject import InjectionSetup
     from host.status import HostStatus
 
@@ -61,11 +65,16 @@ class BackendBuild:
     would leave the very state the start-up routines exist to repair. It comes
     with the build because it acts on what the build made: a build that never
     finished has nothing to shut down.
+
+    *esde_hooks* maps each of ES-DE's hook names to what answers it
+    (``host.hooks``); ``None`` where no hook service was built, and every hook
+    then answers ``503``.
     """
 
     dispatcher: CallDispatcher
     server_identity: str
     shutdown: Callable[[], Awaitable[None]]
+    esde_hooks: Mapping[str, HookFn] | None
 
 
 class AlreadyRunningError(RuntimeError):
@@ -87,6 +96,8 @@ async def run_backend(
     port_file_path: str,
     logger: logging.Logger,
     token: str,
+    hook_token: str,
+    hook_files_dir: str,
     injection: InjectionSetup | None = None,
     preferred_port: int = DEFAULT_PORT,
 ) -> None:
@@ -95,9 +106,11 @@ async def run_backend(
     *build* performs the schema migration, the wiring and the start-up routines
     and answers with the dispatcher for the object calls reach, the identity
     this server answers under, and the shutdown of what it built
-    (:class:`BackendBuild`). *token* is this process's admission token,
-    created by the caller because the logging formatter that keeps it out of the
-    log file has to exist before the first line is written. *injection* is what
+    (:class:`BackendBuild`). *token* is this process's admission token and
+    *hook_token* its hook token, both created by the caller because the logging
+    formatter that keeps them out of the log file has to exist before the first
+    line is written. *hook_files_dir* is where the files ES-DE's scripts read
+    are written (``host.hooks.HookFiles``). *injection* is what
     the panel is loaded into Steam with, or ``None`` to serve the panel and load
     it nowhere. *preferred_port* is the port asked for first; the bind falls
     back past a port some other program holds.
@@ -106,6 +119,7 @@ async def run_backend(
     """
     lock = SingleInstanceLock(lock_path)
     port_file = PortFile(port_file_path)
+    hook_files = HookFiles(hook_files_dir)
     if not lock.acquire():
         raise AlreadyRunningError(_where_the_running_one_is(port_file))
 
@@ -127,11 +141,17 @@ async def run_backend(
             logger=logger,
             server_identity=built.server_identity,
             token=token,
+            hooks=built.esde_hooks,
+            hook_token=hook_token,
             preferred_port=preferred_port,
         )
         status.port = await server.start()
         status.count_dropped_messages = lambda: server.dropped_messages
         port_file.write(status.port)
+        try:
+            hook_files.write(status.port, hook_token)
+        except OSError as exc:
+            logger.error(f"host: cannot write ES-DE's hook files into {hook_files.directory}: {exc}")
 
         # Once, at start-up, with the token in it: this is the address the panel
         # is loaded from, and without it the development loop cannot be driven
@@ -181,6 +201,7 @@ async def run_backend(
                 await built.shutdown()
         if server is not None:
             await server.stop()
+        hook_files.remove()
         port_file.remove()
         lock.release()
 

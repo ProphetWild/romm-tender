@@ -16,7 +16,7 @@ import asyncio
 import base64
 import json
 import os
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from host.access import SESSION_PARAM, STEAM_UI_ORIGIN, TOKEN_PARAM
 from lib.http_messages import HEAD_TERMINATOR, parse_request_head
@@ -28,6 +28,9 @@ from lib.websocket_frames import (
     header_length,
     parse_frame_header,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 RECEIVE_TIMEOUT = 5.0
 
@@ -44,18 +47,21 @@ async def http_get(
     origin: str | None = STEAM_UI_ORIGIN,
     host: str | None = None,
     method: str = "GET",
+    headers: Sequence[tuple[str, str]] = (),
 ) -> tuple[int, dict[str, str], bytes]:
     """Make one request and return ``(status, headers, body)``.
 
     *path* is used verbatim, so a test can send a raw ``..`` or a percent-encoded
     one without this helper normalising it away — which would be the one thing
-    the traversal cases must not have done for them.
+    the traversal cases must not have done for them. *headers* are written after
+    ``Host`` and ``Origin``, as given.
     """
     reader, writer = await asyncio.open_connection("127.0.0.1", port)
     target = path if token is None else f"{path}{'&' if '?' in path else '?'}{TOKEN_PARAM}={token}"
     lines = [f"{method} {target} HTTP/1.1", f"Host: {host if host is not None else f'127.0.0.1:{port}'}"]
     if origin is not None:
         lines.append(f"Origin: {origin}")
+    lines.extend(f"{name}: {value}" for name, value in headers)
     writer.write(("\r\n".join(lines) + "\r\n\r\n").encode("latin-1"))
     await writer.drain()
 
@@ -63,15 +69,15 @@ async def http_get(
     head, _, _ = raw.partition(HEAD_TERMINATOR)
     status_line, _, rest = head.decode("latin-1").partition("\r\n")
     status = int(status_line.split(" ")[1])
-    headers = {
+    answered = {
         name.strip().lower(): value.strip()
         for name, _, value in (line.partition(":") for line in rest.split("\r\n") if line)
     }
 
-    length = int(headers.get("content-length", "0"))
+    length = int(answered.get("content-length", "0"))
     body = await asyncio.wait_for(reader.readexactly(length), RECEIVE_TIMEOUT) if length else b""
     writer.close()
-    return status, headers, body
+    return status, answered, body
 
 
 class WsTestClient:

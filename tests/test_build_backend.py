@@ -1,10 +1,11 @@
-"""What the process entry hands the host: the built application, repaired, behind the endpoints."""
+"""What the process entry hands the host: the built application, repaired, behind the endpoints, and its tokens."""
 
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
+import os
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -15,6 +16,7 @@ from domain.app_directories import AppDirectories
 from domain.update_release import UpdateSource
 from host import EventSink, HostStatus
 from host.dispatch import route_names
+from host.logging_setup import LOG_FILENAME
 from main import Endpoints, build_backend
 
 if TYPE_CHECKING:
@@ -139,3 +141,62 @@ class TestBuildBackend:
         assert built.dispatcher.method_names == route_names(Endpoints)
         assert service_answer["result"] == {"success": True}
         assert host_answer["result"]["failed_startup_steps"] == ["prune_orphaned_cover_cache"]
+
+    async def test_no_hook_service_is_built_yet_so_the_host_answers_every_hook_503(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch
+    ):
+        built, _app, _status, _events, _asked = await self._build(tmp_path, monkeypatch)
+
+        assert built.esde_hooks is None
+
+
+class TestRun:
+    """The start ``run`` hands the host: both tokens minted, both kept out of the log file, the hook files' place."""
+
+    @staticmethod
+    def _start(tmp_path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+        for name, directory in (
+            ("TENDER_CONFIG_DIR", "config"),
+            ("TENDER_DATA_DIR", "data"),
+            ("TENDER_CACHE_DIR", "cache"),
+            ("TENDER_STATE_DIR", "state"),
+            ("TENDER_CODE_DIR", "code"),
+            ("TENDER_BIN_DIR", "bin"),
+            ("XDG_RUNTIME_DIR", "run"),
+        ):
+            monkeypatch.setenv(name, str(tmp_path / directory))
+        handed: dict[str, Any] = {}
+
+        async def recording_run_backend(**kwargs: Any) -> None:
+            handed.update(kwargs)
+
+        monkeypatch.setattr(main, "run_backend", recording_run_backend)
+        assert main.run() == 0
+        return handed
+
+    def test_it_hands_the_host_a_hook_token_of_its_own(self, tmp_path, monkeypatch, restore_root_logger):
+        handed = self._start(tmp_path, monkeypatch)
+
+        assert len(handed["hook_token"]) >= 32
+        assert handed["hook_token"] != handed["token"]
+
+    def test_every_start_mints_a_fresh_one(self, tmp_path, monkeypatch, restore_root_logger):
+        first = self._start(tmp_path, monkeypatch)["hook_token"]
+        second = self._start(tmp_path, monkeypatch)["hook_token"]
+
+        assert first != second
+
+    def test_the_hook_files_go_into_the_data_root(self, tmp_path, monkeypatch, restore_root_logger):
+        handed = self._start(tmp_path, monkeypatch)
+
+        assert handed["hook_files_dir"] == os.path.join(str(tmp_path / "data"), "esde-hooks")
+
+    def test_neither_token_reaches_the_log_file(self, tmp_path, monkeypatch, restore_root_logger):
+        handed = self._start(tmp_path, monkeypatch)
+
+        logging.getLogger().warning(f"a line carrying {handed['token']} and {handed['hook_token']}")
+
+        written = (tmp_path / "state" / LOG_FILENAME).read_text(encoding="utf-8")
+        assert "a line carrying" in written
+        assert handed["token"] not in written
+        assert handed["hook_token"] not in written

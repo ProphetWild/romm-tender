@@ -1,15 +1,17 @@
-"""The loopback server — the port, the two routes, and what each one refuses.
+"""The loopback server — the port, the three entry points, and what each one refuses.
 
 Contract: the HTTP surface this backend offers and the WebSocket it upgrades to.
-Owns the bind and its fallback, the static route, the upgrade handshake, and the
-rule that the newest connection wins. It performs the admission checks by
-calling :mod:`host.access`; it does not decide them.
+Owns the bind and its fallback, the static route, the upgrade handshake, the
+rule that the newest connection wins, and the carriage of ES-DE's hooks. It
+performs the admission checks by calling :mod:`host.access`; it does not decide
+them. What a hook answers is :mod:`host.hooks`'s.
 
 **It is a hand-written server because the standard library has no asyncio HTTP
 server** — ``http.server`` blocks a thread per request, and this backend is
 asyncio throughout. What is written here is exactly as much HTTP as a ``GET``
 and an upgrade need, and no more: no ``POST``, no body parsing, no directory
-listings. Every call travels on the WebSocket.
+listings. Every call from the panel travels on the WebSocket; a hook is a
+``GET`` whose arguments are its query.
 
 **The directory served is handed in, never searched for.** A host that looked
 for a build output relative to its own file would be the only piece of this
@@ -31,8 +33,9 @@ import sys
 from collections import OrderedDict
 from typing import TYPE_CHECKING
 
-from host.access import SESSION_PARAM, TOKEN_PARAM, AccessPolicy, check_access, new_token
+from host.access import SESSION_PARAM, TOKEN_PARAM, AccessPolicy, check_access, is_hook_path, new_token
 from host.connection import HostConnection
+from host.hooks import answer_hook
 from host.protocol import CLOSE_STRANDED_PANEL_RELOADS, CLOSE_STRANDED_PANEL_RESTART_STEAM, ReloadOutlook
 from lib.http_messages import HEAD_TERMINATOR, MAX_HEAD_BYTES, HttpParseError, build_response_head, parse_request_head
 from lib.path_safety import safe_join
@@ -47,10 +50,11 @@ from lib.websocket_frames import (
 
 if TYPE_CHECKING:
     import logging
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Awaitable, Callable, Mapping
 
     from host.dispatch import CallDispatcher
     from host.events import EventSink
+    from host.hooks import HookFn
     from lib.http_messages import RequestHead
 
 # The port asked for first. Falling back is for a FOREIGN program holding it —
@@ -59,7 +63,8 @@ if TYPE_CHECKING:
 DEFAULT_PORT = 27737
 PORT_ATTEMPTS = 32
 
-# The one path that upgrades. Everything else on this server is a file.
+# The one path that upgrades. Everything else on this server is a hook, under
+# ``host.access.HOOKS_PREFIX``, or a file.
 WS_PATH = "/ws"
 
 # What the panel is loaded from. The host knows this name because the address it
@@ -112,7 +117,12 @@ _STRANDED_LOG_WORDING = {
 
 
 class HostServer:
-    """Binds a loopback port and serves the panel: one file route, one upgrade."""
+    """Binds a loopback port and serves the panel and ES-DE: one file route, one upgrade, one hook route.
+
+    *hooks* maps each hook name to what answers it, and ``None`` answers every
+    hook with ``503``. *token* and *hook_token* are minted here when not
+    handed in.
+    """
 
     def __init__(
         self,
@@ -123,6 +133,8 @@ class HostServer:
         logger: logging.Logger,
         server_identity: str,
         token: str | None = None,
+        hooks: Mapping[str, HookFn] | None = None,
+        hook_token: str | None = None,
         preferred_port: int = DEFAULT_PORT,
         port_attempts: int = PORT_ATTEMPTS,
     ) -> None:
@@ -132,6 +144,8 @@ class HostServer:
         self._logger = logger
         self._server_identity = server_identity
         self._token = token or new_token()
+        self._hooks = hooks
+        self._hook_token = hook_token or new_token()
         self._preferred_port = preferred_port
         self._port_attempts = port_attempts
 
@@ -161,6 +175,11 @@ class HostServer:
     def token(self) -> str:
         """This process's admission token. Never served, never logged to file."""
         return self._token
+
+    @property
+    def hook_token(self) -> str:
+        """This process's hook token. Handed to ES-DE's scripts in a file, never served, never logged to file."""
+        return self._hook_token
 
     @property
     def bound_addresses(self) -> tuple[str, ...]:
@@ -300,7 +319,7 @@ class HostServer:
         except OSError:
             return
 
-        policy = AccessPolicy(port=self._port, token=self._token)
+        policy = AccessPolicy(port=self._port, token=self._token, hook_token=self._hook_token)
         verdict = check_access(head, policy)
         if verdict.refused:
             if verdict.wrong_token and head.method == "GET" and head.path == WS_PATH and _handshake_key(head):
@@ -318,6 +337,10 @@ class HostServer:
 
         if head.path == WS_PATH:
             await self._upgrade(head, reader, writer)
+            return
+
+        if is_hook_path(head.path):
+            await self._serve_hook(head, writer)
             return
 
         await self._serve_file(head, writer, verdict.echo_origin)
@@ -441,6 +464,24 @@ class HostServer:
             headers.append(("Vary", "Origin"))
 
         await self._write_response(writer, 200, headers, body)
+        await self._shutdown(writer)
+
+    async def _serve_hook(self, head: RequestHead, writer: asyncio.StreamWriter) -> None:
+        """Answer one of ES-DE's hooks (``host.hooks``), and close.
+
+        No CORS header: the caller is a script, and no page is meant to read
+        what a hook answers.
+        """
+        answer = await answer_hook(self._hooks, head, self._logger)
+        if not answer.body:
+            await self._refuse(writer, answer.status)
+            return
+        headers = [
+            ("Content-Type", "application/json"),
+            ("Content-Length", str(len(answer.body))),
+            ("Connection", "close"),
+        ]
+        await self._write_response(writer, answer.status, headers, answer.body)
         await self._shutdown(writer)
 
     async def _upgrade(self, head: RequestHead, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:

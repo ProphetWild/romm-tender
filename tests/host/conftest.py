@@ -3,7 +3,8 @@
 Nothing here fakes the transport. The fixture starts a :class:`host.server.HostServer`
 on a free loopback port with a small stand-in for ``main.Endpoints``, and the
 tests reach it through :mod:`tests.host._client`, which opens a TCP connection.
-What is faked is only what the host is not: the object calls land on.
+What is faked is only what the host is not: the object calls land on, and the
+routes ES-DE's hook scripts reach.
 
 The served root is a ``tmp_path`` directory rather than the repository's real
 ``dist/``. That directory is git-ignored and is produced by a build pytest does
@@ -14,6 +15,7 @@ somebody had run the bundler.
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import socket
 import sys
@@ -27,9 +29,14 @@ from host.route import route
 from host.server import HostServer
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Mapping
+
+    from host.hooks import HookFn
 
 SERVER_IDENTITY = "romm-tender/0.0.0-test"
+
+# The names ``main.EsdeHooks`` answers to, which is what a script calls.
+HOOK_NAMES = ("startup", "prepare", "finish", "select")
 
 
 class FakeEndpoints:
@@ -87,6 +94,24 @@ class FakeEndpoints:
 
     async def unmarked_coroutine(self) -> None:
         """Public and ``async``, but not marked, so no caller may reach it."""
+
+
+class FakeHooks:
+    """Stands in for ``main``'s ES-DE hook routes: records each call, and answers or raises what a case set."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict[str, str]]] = []
+        self.answer: object = {"success": True}
+        self.raises: BaseException | None = None
+
+    def routes(self) -> Mapping[str, HookFn]:
+        return {name: functools.partial(self._answer, name) for name in HOOK_NAMES}
+
+    async def _answer(self, name: str, args: Mapping[str, str]) -> object:
+        self.calls.append((name, dict(args)))
+        if self.raises is not None:
+            raise self.raises
+        return self.answer
 
 
 def free_port() -> int:
@@ -162,11 +187,14 @@ async def close_all(servers: list[asyncio.Server]) -> None:
 class RunningHost:
     """A started server plus the pieces a test needs to make assertions about it."""
 
-    def __init__(self, server: HostServer, endpoints: FakeEndpoints, events: EventSink, static_root: str) -> None:
+    def __init__(
+        self, server: HostServer, endpoints: FakeEndpoints, events: EventSink, static_root: str, hooks: FakeHooks
+    ) -> None:
         self.server = server
         self.endpoints = endpoints
         self.events = events
         self.static_root = static_root
+        self.hooks = hooks
 
     @property
     def port(self) -> int:
@@ -175,6 +203,10 @@ class RunningHost:
     @property
     def token(self) -> str:
         return self.server.token
+
+    @property
+    def hook_token(self) -> str:
+        return self.server.hook_token
 
 
 @pytest.fixture
@@ -187,16 +219,18 @@ async def running_host(tmp_path) -> AsyncIterator[RunningHost]:
 
     endpoints = FakeEndpoints()
     events = EventSink(logger)
+    hooks = FakeHooks()
     server = HostServer(
         dispatcher=CallDispatcher(endpoints, logger),
         events=events,
         static_root=str(static_root),
         logger=logger,
         server_identity=SERVER_IDENTITY,
+        hooks=hooks.routes(),
         preferred_port=free_port(),
     )
     await server.start()
     try:
-        yield RunningHost(server, endpoints, events, str(static_root))
+        yield RunningHost(server, endpoints, events, str(static_root), hooks)
     finally:
         await server.stop()

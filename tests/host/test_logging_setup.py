@@ -183,3 +183,47 @@ class TestTokenRedaction:
         )
 
         assert rendered.endswith("[WARNING]: careful")
+
+
+class TestHookTokenRedaction:
+    """The hook token is kept out of the file the same way, and stderr stays plain for it too."""
+
+    def test_the_hook_token_never_reaches_the_file(self, tmp_path, restore_root_logger):
+        root = configure_logging(str(tmp_path), "s3cr3t-token", "h00k-t0ken")
+
+        root.warning("host: unreadable request head: malformed header line: 'X-Tender-Hook-Token : h00k-t0ken'")
+
+        written = (tmp_path / LOG_FILENAME).read_text()
+        assert "h00k-t0ken" not in written
+        assert "X-Tender-Hook-Token : ***" in written
+
+    def test_it_is_redacted_in_a_formatting_argument(self, tmp_path, restore_root_logger):
+        root = configure_logging(str(tmp_path), "s3cr3t-token", "h00k-t0ken")
+
+        root.error("hook %s raised", "h00k-t0ken")
+
+        assert "h00k-t0ken" not in (tmp_path / LOG_FILENAME).read_text()
+
+    def test_both_tokens_in_one_line_are_redacted(self, tmp_path, restore_root_logger):
+        root = configure_logging(str(tmp_path), "s3cr3t-token", "h00k-t0ken")
+
+        root.info("?token=s3cr3t-token and X-Tender-Hook-Token: h00k-t0ken")
+
+        written = (tmp_path / LOG_FILENAME).read_text()
+        assert "s3cr3t-token" not in written
+        assert "h00k-t0ken" not in written
+
+    def test_stderr_receives_the_line_whole(self, tmp_path, restore_root_logger, capsys):
+        """The stderr handler keeps the plain formatter, whichever token a line carries."""
+        root = configure_logging(str(tmp_path), "s3cr3t-token", "h00k-t0ken")
+
+        root.info("X-Tender-Hook-Token: h00k-t0ken")
+
+        assert "X-Tender-Hook-Token: h00k-t0ken" in capsys.readouterr().err
+
+    def test_the_formatter_redacts_every_token_it_is_given_and_skips_an_empty_one(self):
+        formatter = RedactingFormatter("%(message)s", "first", "", "second")
+
+        rendered = formatter.format(logging.LogRecord("t", logging.INFO, "f", 1, "first, second, third", None, None))
+
+        assert rendered == "***, ***, third"

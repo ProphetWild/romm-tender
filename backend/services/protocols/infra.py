@@ -35,6 +35,27 @@ class PanelConnectedFn(Protocol):
     def __call__(self) -> bool: ...
 
 
+class EsdeHookHandler(Protocol):
+    """What ES-DE's event scripts reach through the host's hook route, one method per hook.
+
+    The entry point answers each hook from the method of its name
+    (``main.EsdeHooks``). *path* is the game's path as ES-DE passed it;
+    *escaped* says it still carries the shell's backslash escapes, as ES-DE
+    passes ``game-start`` and ``game-end`` theirs (ES-DE's
+    ``Scripting::fireEvent`` and ``FileData::launchGame``). Each answers a
+    JSON-encodable dict, and refuses by raising, as a use case behind an
+    endpoint does.
+    """
+
+    async def startup(self) -> dict[str, Any]: ...
+
+    async def prepare(self, path: str, escaped: bool) -> dict[str, Any]: ...
+
+    async def finish(self, path: str, escaped: bool) -> dict[str, Any]: ...
+
+    async def select(self, path: str) -> dict[str, Any]: ...
+
+
 class ResolveUploadConflictFn(Protocol):
     """Decide the fallback when an upload POST is rejected by RomM's 409.
 

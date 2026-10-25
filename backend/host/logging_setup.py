@@ -20,7 +20,7 @@ address the panel loads from carries the admission token, and it is printed once
 at start-up on stderr so the development loop is usable at all — the terminal for
 a hand start, the journal for a service. That line is the deliberate exception;
 the file is where a token would outlive the process, so the file is what is
-redacted.
+redacted — of the hook token too, which no line prints on purpose.
 
 A ``logging.Filter`` cannot express that, and the way it fails is silent. A
 filter sees the record every handler shares, so redacting there rewrites the
@@ -54,7 +54,7 @@ _REDACTED = "***"
 
 
 class RedactingFormatter(logging.Formatter):
-    """Formats a record, then removes the admission token from the RESULT.
+    """Formats a record, then removes each of this process's tokens from the RESULT.
 
     The redaction happens on this handler's own output string and touches
     nothing else. That is the whole point: a ``logging.Filter`` sees the record
@@ -68,22 +68,27 @@ class RedactingFormatter(logging.Formatter):
     the parts a filter thought to look at.
     """
 
-    def __init__(self, fmt: str, token: str) -> None:
+    def __init__(self, fmt: str, *tokens: str) -> None:
         super().__init__(fmt)
-        self._token = token
+        self._tokens = tuple(token for token in tokens if token)
 
     def format(self, record: logging.LogRecord) -> str:
-        """Render *record* for this handler, with the token taken out."""
+        """Render *record* for this handler, with every token taken out."""
         rendered = super().format(record)
-        return rendered.replace(self._token, _REDACTED) if self._token else rendered
+        for token in self._tokens:
+            rendered = rendered.replace(token, _REDACTED)
+        return rendered
 
 
-def configure_logging(log_dir: str, token: str, level: int = logging.INFO) -> logging.Logger:
+def configure_logging(log_dir: str, *tokens: str, level: int = logging.INFO) -> logging.Logger:
     """Configure the root logger to write to *log_dir* and to stderr; return it.
 
     Call once, from the entry point. Existing root handlers are removed first so
     a second call replaces rather than doubles — a doubled handler writes every
     line twice and rotates at half the size it should.
+
+    *tokens* are kept out of the file and only the file: the entry point passes
+    the admission token and the hook token. An empty one redacts nothing.
 
     *level* is the root's for the life of the process: the entry point passes
     none and no user-facing setting reaches this call, so a DEBUG record judged
@@ -102,7 +107,7 @@ def configure_logging(log_dir: str, token: str, level: int = logging.INFO) -> lo
         backupCount=LOG_BACKUP_COUNT,
         encoding="utf-8",
     )
-    file_handler.setFormatter(RedactingFormatter(LOG_FORMAT, token))
+    file_handler.setFormatter(RedactingFormatter(LOG_FORMAT, *tokens))
 
     # stderr, never stdout — see the module docstring. Under systemd this is the
     # journal with nothing further to configure. Its formatter is the plain one:

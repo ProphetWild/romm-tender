@@ -4,6 +4,7 @@ import inspect
 import logging
 import os
 import sys
+from collections.abc import Mapping
 from dataclasses import asdict
 from typing import Any
 
@@ -23,12 +24,14 @@ from domain.refusal import DomainRefused
 from domain.update_install import installer_environment
 from domain.update_release import UpdateSource, resolve_update_source
 from host import (
+    HOOK_FILES_DIRNAME,
     LOCK_FILENAME,
     PORT_FILENAME,
     AlreadyRunningError,
     BackendBuild,
     CallDispatcher,
     EventSink,
+    HookFn,
     HostStatus,
     InjectionSetup,
     configure_logging,
@@ -38,6 +41,7 @@ from host import (
 )
 from lib.errors import Refused, RommApiError, classify_error, romm_error_log_level
 from lib.partial_failure import PartialFailure
+from services.protocols import EsdeHookHandler
 
 # No catch-all: it would show a programming error as a sentence about the
 # user's game (``.claude/rules/host.md``, rule 1), which is also why
@@ -1238,25 +1242,82 @@ async def build_backend(
     )
     app.run_startup_repairs(status.record_failed_step)
     logger.info("Tender backend loaded")
+    hook_service = _esde_hook_service()
     return BackendBuild(
         dispatcher=CallDispatcher(Endpoints(app, status), logger),
         server_identity=app.user_agent,
         shutdown=app.shutdown,
+        esde_hooks=None if hook_service is None else esde_hook_routes(EsdeHooks(hook_service)),
     )
+
+
+def _esde_hook_service() -> EsdeHookHandler | None:
+    """The service ES-DE's hooks call, or ``None``, which the host answers with ``503`` on every hook.
+
+    No such service is built yet; this is where :func:`build_backend` takes it
+    from once one is.
+    """
+    return None
+
+
+@_translating_refusals
+class EsdeHooks:
+    """What ES-DE's event scripts can call: one public method per hook, named as the hook is.
+
+    Not on :class:`Endpoints`, because every public method there is reachable
+    over the WebSocket; these are reached only through the host's hook route,
+    behind the hook token (``host.hooks``). Each takes the call's decoded query
+    and asks the hook service's method of the same name. A refusal that
+    service raises is answered here as an endpoint answers one; anything else,
+    a missing argument included, is left to the host, which reports it as the
+    carriage's failure.
+    """
+
+    def __init__(self, service: EsdeHookHandler) -> None:
+        self._service = service
+
+    async def startup(self, _args: Mapping[str, str]) -> dict[str, Any]:
+        return await self._service.startup()
+
+    async def prepare(self, args: Mapping[str, str]) -> dict[str, Any]:
+        return await self._service.prepare(args["path"], _escaped(args))
+
+    async def finish(self, args: Mapping[str, str]) -> dict[str, Any]:
+        return await self._service.finish(args["path"], _escaped(args))
+
+    async def select(self, args: Mapping[str, str]) -> dict[str, Any]:
+        return await self._service.select(args["path"])
+
+
+def _escaped(args: Mapping[str, str]) -> bool:
+    """The ``escaped`` argument, which a script sends as ``1`` or ``0``; anything else is a script that is wrong."""
+    value = args["escaped"]
+    if value not in ("0", "1"):
+        raise ValueError(f"escaped is '1' or '0', not {value!r}")
+    return value == "1"
+
+
+def esde_hook_routes(hooks: EsdeHooks) -> dict[str, HookFn]:
+    """Every public method of *hooks* under its own name, which is the hook's: ``/hooks/esde/<name>``."""
+    return {
+        name: getattr(hooks, name)
+        for name, value in vars(EsdeHooks).items()
+        if not name.startswith("_") and inspect.isfunction(value)
+    }
 
 
 def run() -> int:
     """Run the backend as a process of its own, until it is asked to stop.
 
     The whole start, in the order the host needs it: resolve where the
-    directories are, mint the admission token, configure logging around it, then
-    hand the host :func:`build_backend` to build the application and the
-    endpoints to dispatch onto.
+    directories are, mint the admission token and the hook token, configure
+    logging around them, then hand the host :func:`build_backend` to build the
+    application and the endpoints to dispatch onto.
 
     Synchronous on purpose. Everything here is path and environment work that
-    belongs before a loop exists — and the token has to be minted before the
-    first log line, because the formatter that keeps it out of the log file
-    is built with the file handler and needs the token to redact.
+    belongs before a loop exists — and the tokens have to be minted before the
+    first log line, because the formatter that keeps them out of the log file
+    is built with the file handler and needs them to redact.
 
     Answers 0 for a clean stop, 1 when another backend already holds the lock.
     """
@@ -1265,7 +1326,8 @@ def run() -> int:
     update_source = resolve_update_source(os.environ, _CODE_DIR_FALLBACK)
     installer_env = installer_environment(os.environ, directories, sys.executable)
     token = new_token()
-    logger = configure_logging(directories.state_dir, token)
+    hook_token = new_token()
+    logger = configure_logging(directories.state_dir, token, hook_token)
     logger.info(f"host: code {directories.code_dir}, data {directories.data_dir}, cache {directories.cache_dir}")
     status = HostStatus()
     events = EventSink(logger)
@@ -1298,6 +1360,9 @@ def run() -> int:
                 port_file_path=os.path.join(directories.runtime_dir, PORT_FILENAME),
                 logger=logger,
                 token=token,
+                hook_token=hook_token,
+                # Not beside the port file: ES-DE cannot read there (``host.hooks``).
+                hook_files_dir=os.path.join(directories.data_dir, HOOK_FILES_DIRNAME),
                 injection=InjectionSetup.from_environment(
                     os.environ,
                     static_root=static_root,
